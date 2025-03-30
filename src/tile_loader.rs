@@ -399,7 +399,7 @@ impl TileLoader {
             let path = entry.path();
 
             // Check if it's a bin file
-            if path.is_file() && path.extension().map_or(false, |ext| ext == "bin") {
+            if path.is_file() && path.extension().is_some_and(|ext| ext == "bin") {
                 let file_name = path.file_stem().unwrap().to_string_lossy();
 
                 // Load the tile

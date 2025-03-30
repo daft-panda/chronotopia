@@ -26,7 +26,7 @@ const geojsonSource = {
         geometry: {
           type: 'LineString',
           coordinates:
-            trip.points.map(v => [v.lon, v.lat])
+            trip.points.map(v => [v.latlon!.lon, v.latlon!.lat])
         }
       }
     })
@@ -35,13 +35,36 @@ const geojsonSource = {
 };
 
 const markerCoordinates = ref<LngLatLike>([13.377507, 52.516267]);
+
+const routeMatchTrace = await $api.getRouteMatchTrace({});
+
+const selectWindow = (index: number) => {
+  geojsonSource.data.value = {
+    type: 'FeatureCollection',
+    features: routeMatchTrace.windowTraces[index]!.segments.map(segment => {
+      return {
+        type: 'Feature',
+        properties: {},
+        geometry: {
+          type: 'LineString',
+          coordinates:
+            segment.coordinates.map(v => [v.lon, v.lat])
+        }
+      }
+    })
+  }
+}
 </script>
 
 <template>
   <div style="height: 100%;">
-    <h1>Hi!</h1>
+    <div style="display: flex; flex-direction: row;">
+      <div v-for="(window, i) in routeMatchTrace.windowTraces" :key="i"
+        style="width: 2rem; height: 2rem; padding: 1rem; cursor: pointer; border: solid 1px black;"
+        @mouseup="selectWindow(i)">{{ i }}</div>
+    </div>
     <ClientOnly>
-      <mgl-map map-style="https://api.maptiler.com/maps/streets/style.json?key=Ic6Mr5qetb5kn90hyEzO" :zoom="6"
+      <mgl-map ref="map" map-style="https://api.maptiler.com/maps/streets/style.json?key=Ic6Mr5qetb5kn90hyEzO" :zoom="6"
         :center="[9.4777420000, 51.3157550000]">
         <mgl-fullscreen-control />
         <mgl-navigation-control />
@@ -63,6 +86,8 @@ body {
   width: 100%;
   margin: 0;
   padding: 0;
+  background-color: #222;
+  color: #AAA;
 }
 
 div#__nuxt {

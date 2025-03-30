@@ -275,7 +275,7 @@ impl OsmProcessor {
                         for &node_id in &node_refs {
                             node_connections
                                 .entry(node_id)
-                                .or_insert_with(Vec::new)
+                                .or_default()
                                 .push(way.id() as u64);
                         }
                     }
@@ -293,7 +293,7 @@ impl OsmProcessor {
 
     fn build_connectivity(
         &self,
-        road_segments: &mut Vec<RoadSegment>,
+        road_segments: &mut [RoadSegment],
         node_connections: &HashMap<u64, Vec<u64>>,
     ) -> Result<()> {
         let start_time = Instant::now();
@@ -322,7 +322,7 @@ impl OsmProcessor {
         let mut segment_connections: HashMap<u64, Vec<u64>> = HashMap::new();
 
         // First pass: collect connection information
-        for (_i, segment) in road_segments.iter().enumerate() {
+        for segment in road_segments.iter() {
             // Get endpoints for faster connectivity check
             if segment.nodes.len() < 2 {
                 continue;
@@ -358,7 +358,7 @@ impl OsmProcessor {
                                 if other_segment.nodes.first() == Some(&node) {
                                     segment_connections
                                         .entry(segment_id)
-                                        .or_insert_with(Vec::new)
+                                        .or_default()
                                         .push(other_id);
                                     connection_count += 1;
                                 }
@@ -366,7 +366,7 @@ impl OsmProcessor {
                                 // Non-oneway segments can connect at any point
                                 segment_connections
                                     .entry(segment_id)
-                                    .or_insert_with(Vec::new)
+                                    .or_default()
                                     .push(other_id);
                                 connection_count += 1;
                             }
@@ -409,7 +409,7 @@ impl OsmProcessor {
 
             // Adaptive tile splitting
             loop {
-                let segments = tiles.entry(tile_id.clone()).or_insert_with(Vec::new);
+                let segments = tiles.entry(tile_id.clone()).or_default();
 
                 // Check density or max depth
                 if segments.len() < self.config.min_tile_density

@@ -6,6 +6,7 @@ package chronotopia;
 
 service Chronotopia {
     rpc GetTrips(RequestParameters) returns (Trips);
+    rpc GetRouteMatchTrace(google.protobuf.Empty) returns (RouteMatchTrace);
 }
 
 message RequestParameters {
@@ -14,9 +15,13 @@ message RequestParameters {
     optional uint32 h3 = 3;
 }
 
+message LatLon {
+    double lat = 1;
+    double lon = 2;
+}
+
 message Point {
-    float lat = 1;
-    float lon = 2;
+    LatLon latlon = 1;
     google.protobuf.Timestamp timestamp = 3;
     optional string label = 4;
     optional string note = 5;
@@ -32,4 +37,25 @@ message Trip {
 
 message Trips {
     repeated Trip trips = 1;
+}
+
+message RoadSegment {
+    uint64 id = 1;
+    repeated LatLon coordinates = 2;
+    bool is_oneway = 3;
+    string highway_type = 4;
+    repeated uint64 connections = 5;
+    optional string name = 6;
+}
+
+message WindowTrace {
+    uint32 start = 1;
+    uint32 end = 2;
+    repeated RoadSegment segments = 3;
+    bool bridge = 4;
+}
+
+message RouteMatchTrace {
+    Trip trip = 1;
+    repeated WindowTrace windowTraces = 2;
 }

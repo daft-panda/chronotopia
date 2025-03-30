@@ -3,8 +3,8 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { RequestParameters, Trips } from "./chronotopia_pb.js";
-import { MethodKind } from "@bufbuild/protobuf";
+import { RequestParameters, RouteMatchTrace, Trips } from "./chronotopia_pb.js";
+import { Empty, MethodKind } from "@bufbuild/protobuf";
 
 /**
  * @generated from service chronotopia.Chronotopia
@@ -19,6 +19,15 @@ export const Chronotopia = {
       name: "GetTrips",
       I: RequestParameters,
       O: Trips,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc chronotopia.Chronotopia.GetRouteMatchTrace
+     */
+    getRouteMatchTrace: {
+      name: "GetRouteMatchTrace",
+      I: Empty,
+      O: RouteMatchTrace,
       kind: MethodKind.Unary,
     },
   }

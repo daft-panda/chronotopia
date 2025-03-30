@@ -5,7 +5,7 @@ pub(crate) mod google_maps_local_timeline {
     use chrono::{DateTime, FixedOffset, TimeDelta};
     use serde::{Deserialize, Serialize};
 
-    use crate::proto::{Point, Trip};
+    use crate::proto::{LatLon, Point, Trip};
 
     use super::chrono_to_prost;
 
@@ -92,11 +92,11 @@ pub(crate) mod google_maps_local_timeline {
             } else {
                 let parts = self.point.replace("geo:", "");
                 let mut parts = parts.split(",");
-                let lat: f32 = match parts.next().unwrap().parse() {
+                let lat: f64 = match parts.next().unwrap().parse() {
                     Ok(v) => v,
                     Err(_) => return None,
                 };
-                let lon: f32 = match parts.next().unwrap().parse() {
+                let lon: f64 = match parts.next().unwrap().parse() {
                     Ok(v) => v,
                     Err(_) => return None,
                 };
@@ -105,8 +105,7 @@ pub(crate) mod google_maps_local_timeline {
                     Err(_) => return None,
                 };
                 Some(Point {
-                    lat,
-                    lon,
+                    latlon: Some(LatLon { lat, lon }),
                     timestamp: Some(chrono_to_prost(
                         &entry
                             .start_time

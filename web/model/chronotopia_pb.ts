@@ -4,7 +4,7 @@
 // @ts-nocheck
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
-import { Message, proto3, Timestamp } from "@bufbuild/protobuf";
+import { Message, proto3, protoInt64, Timestamp } from "@bufbuild/protobuf";
 
 /**
  * @generated from message chronotopia.RequestParameters
@@ -56,18 +56,56 @@ export class RequestParameters extends Message<RequestParameters> {
 }
 
 /**
- * @generated from message chronotopia.Point
+ * @generated from message chronotopia.LatLon
  */
-export class Point extends Message<Point> {
+export class LatLon extends Message<LatLon> {
   /**
-   * @generated from field: float lat = 1;
+   * @generated from field: double lat = 1;
    */
   lat = 0;
 
   /**
-   * @generated from field: float lon = 2;
+   * @generated from field: double lon = 2;
    */
   lon = 0;
+
+  constructor(data?: PartialMessage<LatLon>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chronotopia.LatLon";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "lat", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
+    { no: 2, name: "lon", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): LatLon {
+    return new LatLon().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): LatLon {
+    return new LatLon().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): LatLon {
+    return new LatLon().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: LatLon | PlainMessage<LatLon> | undefined, b: LatLon | PlainMessage<LatLon> | undefined): boolean {
+    return proto3.util.equals(LatLon, a, b);
+  }
+}
+
+/**
+ * @generated from message chronotopia.Point
+ */
+export class Point extends Message<Point> {
+  /**
+   * @generated from field: chronotopia.LatLon latlon = 1;
+   */
+  latlon?: LatLon;
 
   /**
    * @generated from field: google.protobuf.Timestamp timestamp = 3;
@@ -97,8 +135,7 @@ export class Point extends Message<Point> {
   static readonly runtime: typeof proto3 = proto3;
   static readonly typeName = "chronotopia.Point";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "lat", kind: "scalar", T: 2 /* ScalarType.FLOAT */ },
-    { no: 2, name: "lon", kind: "scalar", T: 2 /* ScalarType.FLOAT */ },
+    { no: 1, name: "latlon", kind: "message", T: LatLon },
     { no: 3, name: "timestamp", kind: "message", T: Timestamp },
     { no: 4, name: "label", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 5, name: "note", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
@@ -211,6 +248,171 @@ export class Trips extends Message<Trips> {
 
   static equals(a: Trips | PlainMessage<Trips> | undefined, b: Trips | PlainMessage<Trips> | undefined): boolean {
     return proto3.util.equals(Trips, a, b);
+  }
+}
+
+/**
+ * @generated from message chronotopia.RoadSegment
+ */
+export class RoadSegment extends Message<RoadSegment> {
+  /**
+   * @generated from field: uint64 id = 1;
+   */
+  id = protoInt64.zero;
+
+  /**
+   * @generated from field: repeated chronotopia.LatLon coordinates = 2;
+   */
+  coordinates: LatLon[] = [];
+
+  /**
+   * @generated from field: bool is_oneway = 3;
+   */
+  isOneway = false;
+
+  /**
+   * @generated from field: string highway_type = 4;
+   */
+  highwayType = "";
+
+  /**
+   * @generated from field: repeated uint64 connections = 5;
+   */
+  connections: bigint[] = [];
+
+  /**
+   * @generated from field: optional string name = 6;
+   */
+  name?: string;
+
+  constructor(data?: PartialMessage<RoadSegment>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chronotopia.RoadSegment";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 4 /* ScalarType.UINT64 */ },
+    { no: 2, name: "coordinates", kind: "message", T: LatLon, repeated: true },
+    { no: 3, name: "is_oneway", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 4, name: "highway_type", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "connections", kind: "scalar", T: 4 /* ScalarType.UINT64 */, repeated: true },
+    { no: 6, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RoadSegment {
+    return new RoadSegment().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RoadSegment {
+    return new RoadSegment().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RoadSegment {
+    return new RoadSegment().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RoadSegment | PlainMessage<RoadSegment> | undefined, b: RoadSegment | PlainMessage<RoadSegment> | undefined): boolean {
+    return proto3.util.equals(RoadSegment, a, b);
+  }
+}
+
+/**
+ * @generated from message chronotopia.WindowTrace
+ */
+export class WindowTrace extends Message<WindowTrace> {
+  /**
+   * @generated from field: uint32 start = 1;
+   */
+  start = 0;
+
+  /**
+   * @generated from field: uint32 end = 2;
+   */
+  end = 0;
+
+  /**
+   * @generated from field: repeated chronotopia.RoadSegment segments = 3;
+   */
+  segments: RoadSegment[] = [];
+
+  /**
+   * @generated from field: bool bridge = 4;
+   */
+  bridge = false;
+
+  constructor(data?: PartialMessage<WindowTrace>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chronotopia.WindowTrace";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "start", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+    { no: 2, name: "end", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+    { no: 3, name: "segments", kind: "message", T: RoadSegment, repeated: true },
+    { no: 4, name: "bridge", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WindowTrace {
+    return new WindowTrace().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): WindowTrace {
+    return new WindowTrace().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): WindowTrace {
+    return new WindowTrace().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: WindowTrace | PlainMessage<WindowTrace> | undefined, b: WindowTrace | PlainMessage<WindowTrace> | undefined): boolean {
+    return proto3.util.equals(WindowTrace, a, b);
+  }
+}
+
+/**
+ * @generated from message chronotopia.RouteMatchTrace
+ */
+export class RouteMatchTrace extends Message<RouteMatchTrace> {
+  /**
+   * @generated from field: chronotopia.Trip trip = 1;
+   */
+  trip?: Trip;
+
+  /**
+   * @generated from field: repeated chronotopia.WindowTrace windowTraces = 2;
+   */
+  windowTraces: WindowTrace[] = [];
+
+  constructor(data?: PartialMessage<RouteMatchTrace>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chronotopia.RouteMatchTrace";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "trip", kind: "message", T: Trip },
+    { no: 2, name: "windowTraces", kind: "message", T: WindowTrace, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RouteMatchTrace {
+    return new RouteMatchTrace().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RouteMatchTrace {
+    return new RouteMatchTrace().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RouteMatchTrace {
+    return new RouteMatchTrace().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RouteMatchTrace | PlainMessage<RouteMatchTrace> | undefined, b: RouteMatchTrace | PlainMessage<RouteMatchTrace> | undefined): boolean {
+    return proto3.util.equals(RouteMatchTrace, a, b);
   }
 }
 

@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Map Matcher Debug Viewer</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+        }
+        #map {
+            width: 100%;
+            height: 100vh;
+        }
+        .info-panel {
+            padding: 6px 8px;
+            font: 14px/16px Arial, Helvetica, sans-serif;
+            background: white;
+            background: rgba(255, 255, 255, 0.9);
+            box-shadow: 0 0 15px rgba(0, 0, 0, 0.2);
+            border-radius: 5px;
+            max-width: 300px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .info-panel h4 {
+            margin: 0 0 5px;
+            color: #777;
+        }
+        .legend {
+            text-align: left;
+            line-height: 18px;
+            color: #555;
+        }
+        .legend i {
+            width: 18px;
+            height: 18px;
+            float: left;
+            margin-right: 8px;
+            opacity: 0.7;
+        }
+        .toggle-container {
+            background: white;
+            padding: 10px;
+            border-radius: 4px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.2);
+            margin-bottom: 10px;
+        }
+        .toggle-group {
+            margin-bottom: 5px;
+        }
+        input[type="file"] {
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+    <script>
+        // Initialize map
+        const map = L.map('map').setView([0, 0], 13);
+        
+        // Add OpenStreetMap tiles
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(map);
+        
+        // Create layer groups
+        const gpsPointsLayer = L.layerGroup().addTo(map);
+        const candidatesLayer = L.layerGroup().addTo(map);
+        const projectionsLayer = L.layerGroup().addTo(map);
+        const matchedRouteLayer = L.layerGroup().addTo(map);
+        
+        // Create info panel
+        const infoPanel = L.control();
+        
+        infoPanel.onAdd = function (map) {
+            this._div = L.DomUtil.create('div', 'info-panel');
+            this.update();
+            return this._div;
+        };
+        
+        infoPanel.update = function (props) {
+            this._div.innerHTML = props ? 
+                `<h4>${props.type === 'gps_point' ? 'GPS Point' : props.type === 'candidate' ? 'Candidate Segment' : 'Projection'}</h4>` + 
+                (props.description ? props.description + '<br>' : '') +
+                (props.segment_id ? `Segment ID: ${props.segment_id}<br>` : '') +
+                (props.road_type ? `Road type: ${props.road_type}<br>` : '') +
+                (props.road_name ? `Road name: ${props.road_name || 'unnamed'}<br>` : '') +
+                (props.score !== undefined ? `Score: ${props.score.toFixed(2)}<br>` : '') +
+                (props.distance !== undefined ? `Distance: ${props.distance.toFixed(2)}m<br>` : '') +
+                (props.heading_diff !== undefined ? `Heading diff: ${props.heading_diff.toFixed(2)}°` : '')
+                : 'Hover over an element for details';
+        };
+        
+        infoPanel.addTo(map);
+        
+        // Create control panel for layer toggles
+        const controlPanel = L.control({ position: 'topright' });
+        
+        controlPanel.onAdd = function (map) {
+            const div = L.DomUtil.create('div', 'toggle-container');
+            
+            div.innerHTML = `
+                <div>
+                    <input type="file" id="geojson-upload" accept=".geojson,application/json">
+                    <button id="clear-btn">Clear Map</button>
+                </div>
+                <div class="toggle-group">
+                    <input type="checkbox" id="toggle-gps" checked>
+                    <label for="toggle-gps">GPS Points</label>
+                </div>
+                <div class="toggle-group">
+                    <input type="checkbox" id="toggle-candidates" checked>
+                    <label for="toggle-candidates">Candidate Segments</label>
+                </div>
+                <div class="toggle-group">
+                    <input type="checkbox" id="toggle-projections" checked>
+                    <label for="toggle-projections">Projections</label>
+                </div>
+                <div class="toggle-group">
+                    <input type="checkbox" id="toggle-matched" checked>
+                    <label for="toggle-matched">Matched Route</label>
+                </div>
+            `;
+            
+            L.DomEvent.disableClickPropagation(div);
+            
+            return div;
+        };
+        
+        controlPanel.addTo(map);
+        
+        // Layer toggle event handlers
+        document.getElementById('toggle-gps').addEventListener('change', function(e) {
+            if (e.target.checked) {
+                map.addLayer(gpsPointsLayer);
+            } else {
+                map.removeLayer(gpsPointsLayer);
+            }
+        });
+        
+        document.getElementById('toggle-candidates').addEventListener('change', function(e) {
+            if (e.target.checked) {
+                map.addLayer(candidatesLayer);
+            } else {
+                map.removeLayer(candidatesLayer);
+            }
+        });
+        
+        document.getElementById('toggle-projections').addEventListener('change', function(e) {
+            if (e.target.checked) {
+                map.addLayer(projectionsLayer);
+            } else {
+                map.removeLayer(projectionsLayer);
+            }
+        });
+        
+        document.getElementById('toggle-matched').addEventListener('change', function(e) {
+            if (e.target.checked) {
+                map.addLayer(matchedRouteLayer);
+            } else {
+                map.removeLayer(matchedRouteLayer);
+            }
+        });
+        
+        document.getElementById('clear-btn').addEventListener('click', function() {
+            gpsPointsLayer.clearLayers();
+            candidatesLayer.clearLayers();
+            projectionsLayer.clearLayers();
+            matchedRouteLayer.clearLayers();
+        });
+        
+        // File upload handler
+        document.getElementById('geojson-upload').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                
+                reader.onload = function(e) {
+                    try {
+                        // Clear existing layers
+                        gpsPointsLayer.clearLayers();
+                        candidatesLayer.clearLayers();
+                        projectionsLayer.clearLayers();
+                        matchedRouteLayer.clearLayers();
+                        
+                        // Parse GeoJSON
+                        const geojson = JSON.parse(e.target.result);
+                        processGeoJSON(geojson);
+                        
+                    } catch (error) {
+                        console.error('Error processing GeoJSON:', error);
+                        alert('Error processing GeoJSON: ' + error.message);
+                    }
+                };
+                
+                reader.readAsText(file);
+            }
+        });
+        
+        function processGeoJSON(geojson) {
+            // Track bounds to zoom the map
+            const bounds = L.latLngBounds();
+            let hasPoints = false;
+            
+            geojson.features.forEach(feature => {
+                const properties = feature.properties;
+                const geometry = feature.geometry;
+                
+                if (geometry.type === 'Point') {
+                    const [lon, lat] = geometry.coordinates;
+                    bounds.extend([lat, lon]);
+                    hasPoints = true;
+                    
+                    if (properties.type === 'gps_point') {
+                        // GPS point
+                        const circle = L.circleMarker([lat, lon], {
+                            radius: properties.radius || 5,
+                            color: properties.color || '#000000',
+                            fillColor: properties.color || '#000000',
+                            fillOpacity: 0.7,
+                            weight: 2
+                        }).addTo(gpsPointsLayer);
+                        
+                        circle.feature = feature;
+                        
+                        circle.on('mouseover', function(e) {
+                            infoPanel.update(properties);
+                            this.setStyle({
+                                fillOpacity: 1.0,
+                                weight: 3
+                            });
+                        });
+                        
+                        circle.on('mouseout', function(e) {
+                            infoPanel.update();
+                            this.setStyle({
+                                fillOpacity: 0.7,
+                                weight: 2
+                            });
+                        });
+                    } else if (properties.type === 'projection') {
+                        // Projection point 
+                        const circle = L.circleMarker([lat, lon], {
+                            radius: properties.radius || 3,
+                            color: '#000000',
+                            fillColor: properties.color || '#ffffff',
+                            fillOpacity: 0.8,
+                            weight: 1
+                        }).addTo(projectionsLayer);
+                        
+                        circle.feature = feature;
+                        
+                        circle.on('mouseover', function(e) {
+                            infoPanel.update(properties);
+                            this.setStyle({
+                                fillOpacity: 1.0,
+                                weight: 2
+                            });
+                        });
+                        
+                        circle.on('mouseout', function(e) {
+                            infoPanel.update();
+                            this.setStyle({
+                                fillOpacity: 0.8,
+                                weight: 1
+                            });
+                        });
+                    }
+                } else if (geometry.type === 'LineString') {
+                    const coords = geometry.coordinates.map(coord => [coord[1], coord[0]]);
+                    
+                    if (properties.type === 'candidate') {
+                        // Candidate segment
+                        const line = L.polyline(coords, {
+                            color: properties.color || '#3388ff',
+                            weight: 3,
+                            opacity: 0.6,
+                            dashArray: properties.score > 20 ? '5, 10' : null  // Dash line for poor candidates
+                        }).addTo(candidatesLayer);
+                        
+                        line.feature = feature;
+                        
+                        // Extend bounds
+                        coords.forEach(latLng => bounds.extend(latLng));
+                        
+                        line.on('mouseover', function(e) {
+                            infoPanel.update(properties);
+                            this.setStyle({
+                                weight: 5,
+                                opacity: 0.9
+                            });
+                            this.bringToFront();
+                        });
+                        
+                        line.on('mouseout', function(e) {
+                            infoPanel.update();
+                            this.setStyle({
+                                weight: 3,
+                                opacity: 0.6
+                            });
+                        });
+                    } else if (properties.type === 'matched_route') {
+                        // Matched route
+                        const line = L.polyline(coords, {
+                            color: properties.color || '#FF0000',
+                            weight: properties.weight || 4,
+                            opacity: 0.8
+                        }).addTo(matchedRouteLayer);
+                        
+                        line.feature = feature;
+                        
+                        // Extend bounds
+                        coords.forEach(latLng => bounds.extend(latLng));
+                        
+                        line.on('mouseover', function(e) {
+                            infoPanel.update(properties);
+                            this.setStyle({
+                                weight: 6,
+                                opacity: 1.0
+                            });
+                        });
+                        
+                        line.on('mouseout', function(e) {
+                            infoPanel.update();
+                            this.setStyle({
+                                weight: properties.weight || 4,
+                                opacity: 0.8
+                            });
+                        });
+                    }
+                }
+            });
+            
+            // Fit map to bounds if we have points
+            if (hasPoints) {
+                map.fitBounds(bounds, { padding: [50, 50] });
+            }
+        }
+    </script>
+</body>
+</html>

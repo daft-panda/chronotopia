@@ -1,23 +1,28 @@
+mod debug;
 mod io;
 mod mapmatcher;
 mod osm_preprocessing;
+mod route_matcher; // New route-based matching implementation
 mod tile_loader;
 
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::DateTime;
 use geo::{Coord, Point};
 use http::Method;
 use io::google_maps_local_timeline::LocationHistoryEntry;
 use log::{debug, info, warn};
-use mapmatcher::{MapMatcher, MapMatcherConfig, TileConfig};
+use mapmatcher::TileConfig;
 use osm_preprocessing::RoadSegment;
 use proto::chronotopia_server::{Chronotopia, ChronotopiaServer};
-use proto::{RequestParameters, Trip, Trips};
+use proto::{LatLon, RequestParameters, RouteMatchTrace, Trip, Trips};
+use route_matcher::{RouteMatchJob, RouteMatcher, RouteMatcherConfig, WindowTrace};
 use serde_json::json;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
+use tokio::sync::Mutex;
 use tokio::time::Duration;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
@@ -32,51 +37,34 @@ async fn main() -> Result<()> {
         .format_timestamp(None)
         .target(env_logger::Target::Stderr)
         .init();
-    info!("Starting Chronotopia");
+    info!("Starting Chronotopia with Route-Based Matcher");
 
-    /*
-    At the equator:
-    1 degree latitude = ~111 km
-    1 degree longitude = ~111 km
-
-    So 0.07 degrees x 0.07 degrees = 0.0049 square degrees
-    Area: 0.07 * 111 km * 0.07 * 111 km = (7.77 km)^2 ≈ 60.4 km²
-
-    Close to 50km.
-    */
-
-    // Create a more efficient configuration with loop detection enabled
-    let mapmatcher_config = MapMatcherConfig {
+    // Create configuration for route-based matcher
+    let route_matcher_config = RouteMatcherConfig {
         osm_pbf_path: "/Users/wannes/Downloads/sudeste-latest.osm.pbf".to_string(),
         tile_cache_dir: "sample/tiles".to_string(),
-        max_cached_tiles: 500,        // Increased for better performance
-        max_matching_distance: 100.0, // More realistic matching distance in meters
+        max_cached_tiles: 500,
+        max_matching_distance: 150.0,
         tile_config: TileConfig {
-            base_tile_size: 0.5,    // Base tile size (degrees)
-            min_tile_density: 5000, // Target ~5000 roads per tile
+            base_tile_size: 0.5,
+            min_tile_density: 5000,
             max_split_depth: 2,
         },
-        use_turn_restrictions: true,
-        max_candidates_per_point: 15, // More candidates for better selection
-        distance_weight: 0.5,         // Reduced distance weight to favor continuity
-        heading_weight: 0.3,
-        speed_weight: 0.1,
-        max_tiles_per_depth: 100, // Limit tiles per depth to prevent hanging
-        loop_penalty_weight: 80.0, // Strong penalty for loops
-        continuity_bonus_weight: 30.0, // Strong bonus for road continuity
+        max_candidates_per_point: 10,
+        max_tiles_per_depth: 100,
     };
 
-    // Create map matcher
-    let mapmatcher = MapMatcher::new(mapmatcher_config.clone())?;
+    // Create route matcher
+    let route_matcher = RouteMatcher::new(route_matcher_config.clone())?;
 
     // Check if preprocessing is needed
-    if !Path::new(&mapmatcher_config.tile_cache_dir).exists() {
+    if !Path::new(&route_matcher_config.tile_cache_dir).exists() {
         info!("Tile cache directory doesn't exist. Starting preprocessing...");
-        mapmatcher.preprocess()?;
+        route_matcher.preprocess()?;
     } else {
         info!(
             "Using existing tile cache from {}",
-            mapmatcher_config.tile_cache_dir
+            route_matcher_config.tile_cache_dir
         );
     }
 
@@ -92,7 +80,8 @@ async fn main() -> Result<()> {
     let addr = "[::1]:10000".parse()?;
     let mut chronotopia_service = ChronotopiaService {
         location_history,
-        mapmatcher,
+        route_matcher,
+        last_job: Arc::new(Mutex::new(None)),
     };
 
     // Build trips with timeout protection
@@ -114,9 +103,7 @@ async fn main() -> Result<()> {
     let svc = ChronotopiaServer::new(chronotopia_service);
 
     let cors = CorsLayer::new()
-        // allow `GET` and `POST` when accessing the resource
         .allow_methods([Method::GET, Method::POST])
-        // allow requests from any origin
         .allow_origin(Any)
         .allow_headers(Any);
 
@@ -135,17 +122,19 @@ async fn main() -> Result<()> {
 
 struct ChronotopiaService {
     location_history: Vec<LocationHistoryEntry>,
-    mapmatcher: MapMatcher,
+    route_matcher: RouteMatcher,
+    last_job: Arc<Mutex<Option<RouteMatchJob>>>,
 }
 
 impl ChronotopiaService {
     async fn build_trips(&mut self) -> Result<()> {
         info!(
-            "Building trips from {} location history entries",
+            "Building trips from {} location history entries using Route-Based Matcher",
             self.location_history.len()
         );
         let mut processed_count = 0;
         let mut successful_matches = 0;
+        let mut pending_job: Option<RouteMatchJob> = None;
 
         for entry in &self.location_history {
             if let LocationHistoryEntry::Timeline(tl) = entry {
@@ -157,7 +146,7 @@ impl ChronotopiaService {
 
                 if let Some(start) = trip.start {
                     // Filter for trips after a certain timestamp
-                    if start.seconds > 1742601500 {
+                    if start.seconds > 1742501500 {
                         info!("Processing trip starting at {}", start.seconds);
 
                         // Extract points and timestamps
@@ -169,65 +158,77 @@ impl ChronotopiaService {
                                 if let Some(dt) =
                                     DateTime::from_timestamp(ts.seconds, ts.nanos as u32)
                                 {
-                                    gps_points.push(Point::new(p.lon as f64, p.lat as f64));
+                                    gps_points.push(Point::new(
+                                        p.latlon.unwrap().lon as f64,
+                                        p.latlon.unwrap().lat as f64,
+                                    ));
                                     timestamps.push(dt);
                                 }
                             }
                         }
 
-                        // Skip if insufficient points
-                        if gps_points.len() < 5 {
-                            debug!(
-                                "Skipping trip with {} GPS points (need at least 5)",
-                                gps_points.len()
-                            );
-                            continue;
-                        }
+                        if let Some(job) = pending_job.as_mut() {
+                            // Check if the last timestamp of the pending job is close to the start of the current one
+                            // If so, combine, if not, run the pending job
+                            if *timestamps.first().unwrap() - job.timestamps.last().unwrap()
+                                < chrono::Duration::hours(1)
+                            {
+                                debug!("Merging timeline entries");
+                                job.gps_points.extend(gps_points);
+                                job.timestamps.extend(timestamps);
+                            } else {
+                                // Perform map matching with debug way IDs
+                                info!("Map matching trip with {} points", job.gps_points.len());
 
-                        // Perform map matching with robust error handling
-                        info!("Map matching trip with {} points", gps_points.len());
-                        match self.mapmatcher.match_trace(&gps_points, &timestamps) {
-                            Ok(result) => {
-                                successful_matches += 1;
-                                info!(
-                                    "Map matching successful: {} segments matched ({}/{})",
-                                    result.len(),
-                                    successful_matches,
-                                    processed_count + 1
-                                );
-
-                                debug!(
-                                    "Matched Linestring GeoJSON: {}",
-                                    road_segments_to_geojson(&result)
-                                );
-                            }
-                            Err(e) => {
-                                warn!("Map matching failed: {}", e);
-
-                                // Try to determine why it failed and provide more details
-                                if e.to_string().contains("Segment")
-                                    && e.to_string().contains("not found")
+                                match self
+                                    .route_matcher
+                                    .match_trace(pending_job.as_mut().unwrap())
                                 {
-                                    warn!(
-                                        "Missing segment issue. Check if OSM data is complete and properly preprocessed."
-                                    );
-                                } else if e.to_string().contains("path") {
-                                    warn!(
-                                        "Path finding issue. Consider increasing max_matching_distance or checking road connectivity."
-                                    );
-                                } else {
-                                    warn!("Unknown error. Check logs for more details.");
+                                    Ok(result) => {
+                                        successful_matches += 1;
+                                        info!(
+                                            "Map matching successful: {} segments matched ({}/{})",
+                                            result.len(),
+                                            successful_matches,
+                                            processed_count + 1
+                                        );
+
+                                        // Save matched route to GeoJSON file
+                                        let matched_geojson = road_segments_to_geojson(&result);
+                                        let matched_output_path = format!(
+                                            "sample/route_based_matched_{}.geojson",
+                                            start.seconds
+                                        );
+                                        std::fs::write(
+                                            matched_output_path.clone(),
+                                            serde_json::to_string_pretty(&matched_geojson)?,
+                                        )?;
+
+                                        info!(
+                                            "Route-based matched route saved to {}",
+                                            matched_output_path
+                                        );
+                                    }
+                                    Err(e) => {
+                                        warn!("Route-based map matching failed: {}", e);
+                                    }
                                 }
+
+                                if pending_job.is_some() {
+                                    let mut last_job = self.last_job.lock().await;
+                                    last_job.replace(pending_job.take().unwrap());
+                                }
+
+                                pending_job =
+                                    Some(RouteMatchJob::new(gps_points, timestamps, None));
+                                pending_job.as_mut().unwrap().activate_tracing();
                             }
+                        } else {
+                            pending_job = Some(RouteMatchJob::new(gps_points, timestamps, None));
+                            pending_job.as_mut().unwrap().activate_tracing();
                         }
 
                         processed_count += 1;
-
-                        // Break after processing a few trips to avoid hanging
-                        if processed_count >= 5 {
-                            info!("Processed {} trips (limit reached)", processed_count);
-                            break;
-                        }
                     }
                 }
             }
@@ -275,7 +276,12 @@ pub fn road_segments_to_geojson(segments: &[RoadSegment]) -> serde_json::Value {
         "type": "FeatureCollection",
         "features": [{
             "type": "Feature",
-            "properties": {},
+            "properties": {
+                "type": "matched_route",
+                "color": "#FF0000",
+                "weight": 4,
+                "description": "Route-Based Matched Route"
+            },
             "geometry": {
                 "type": "LineString",
                 "coordinates": coordinates
@@ -306,6 +312,51 @@ impl Chronotopia for ChronotopiaService {
             }
         }
         Ok(Response::new(Trips { trips }))
+    }
+
+    async fn get_route_match_trace(
+        &self,
+        _request: Request<()>,
+    ) -> Result<Response<RouteMatchTrace>, Status> {
+        let last_routejob = self.last_job.lock().await;
+        if let Some(rj) = last_routejob.as_ref() {
+            let window_trace = rj.window_trace.borrow();
+            let rmj: RouteMatchTrace = RouteMatchTrace {
+                trip: None,
+                window_traces: window_trace.iter().map(|v| v.into()).collect(),
+            };
+            Ok(Response::new(rmj))
+        } else {
+            Err(Status::not_found(""))
+        }
+    }
+}
+
+impl From<&RoadSegment> for proto::RoadSegment {
+    fn from(value: &RoadSegment) -> Self {
+        Self {
+            id: value.id,
+            coordinates: value
+                .coordinates
+                .iter()
+                .map(|v| LatLon { lat: v.x, lon: v.y })
+                .collect(),
+            is_oneway: value.is_oneway,
+            highway_type: value.highway_type.clone(),
+            connections: value.connections.clone(),
+            name: value.name.clone(),
+        }
+    }
+}
+
+impl From<&WindowTrace> for proto::WindowTrace {
+    fn from(window_trace: &WindowTrace) -> Self {
+        Self {
+            start: window_trace.start as u32,
+            end: window_trace.end as u32,
+            segments: window_trace.segments.iter().map(|v| v.into()).collect(),
+            bridge: window_trace.bridge,
+        }
     }
 }
 
