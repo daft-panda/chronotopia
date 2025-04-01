@@ -5,13 +5,13 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
 
-use crate::mapmatcher::TileConfig;
 use crate::osm_preprocessing::{TileIndex, WaySegment};
+use crate::route_matcher::TileConfig;
 
 /// Manages tile loading and caching with LRU eviction
 pub struct TileLoader {
     tile_directory: String,
-    pub loaded_tiles: HashMap<String, TileIndex>,
+    pub(crate) loaded_tiles: HashMap<String, TileIndex>,
     max_cached_tiles: usize,
     tile_config: TileConfig,
     segment_index: HashMap<u64, String>,
@@ -34,65 +34,8 @@ impl TileLoader {
         }
     }
 
-    pub fn find_tiles_for_coordinate(
-        &self,
-        coordinate: geo_types::Point<f64>,
-    ) -> Result<HashSet<String>> {
-        let mut candidate_tiles = HashSet::new();
-
-        for depth in 0..=self.tile_config.max_split_depth {
-            let tile_size = self.tile_config.base_tile_size / (2.0f64.powi(depth as i32));
-
-            let x_tile = (coordinate.x() / tile_size).floor() as i32;
-            let y_tile = (coordinate.y() / tile_size).floor() as i32;
-
-            let tile_id = format!("{}_{}_{}", x_tile, y_tile, depth);
-
-            if self.check_tile_exists(&tile_id)? {
-                candidate_tiles.insert(tile_id);
-
-                // If we found a tile at more detailed level, we can stop
-                if depth > 0 && !candidate_tiles.is_empty() {
-                    break;
-                }
-            }
-        }
-
-        Ok(candidate_tiles)
-    }
-
     fn tile_path(&self, tile_id: &str) -> PathBuf {
         Path::new(&self.tile_directory).join(format!("{}.bin", tile_id))
-    }
-
-    pub fn tile_bbox(tile_id: &str) -> Result<geo::Rect<f64>> {
-        let parts: Vec<&str> = tile_id.split('_').collect();
-        if parts.len() != 3 {
-            return Err(anyhow!("Invalid tile ID format: {}", tile_id));
-        }
-
-        let x_tile = parts[0]
-            .parse::<i32>()
-            .map_err(|_| anyhow!("Invalid tile X coordinate: {}", parts[0]))?;
-        let y_tile = parts[1]
-            .parse::<i32>()
-            .map_err(|_| anyhow!("Invalid tile Y coordinate: {}", parts[1]))?;
-        let depth = parts[2]
-            .parse::<i32>()
-            .map_err(|_| anyhow!("Invalid tile depth: {}", parts[2]))?;
-
-        let tile_size = 0.1 / 2f64.powi(depth);
-
-        Ok(geo::Rect::new(
-            geo::Coord {
-                x: x_tile as f64 * tile_size,
-                y: y_tile as f64 * tile_size,
-            },
-            geo::Coord {
-                x: (x_tile as f64 + 1.0) * tile_size,
-                y: (y_tile as f64 + 1.0) * tile_size,
-            },
-        ))
     }
 
     // Updated tile existence check with error handling
