@@ -1,12 +1,14 @@
 syntax = "proto3";
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
 
 package chronotopia;
 
 service Chronotopia {
     rpc GetTrips(RequestParameters) returns (Trips);
     rpc GetRouteMatchTrace(google.protobuf.Empty) returns (RouteMatchTrace);
+    rpc OSMNetworkAroundPoint(LatLon) returns (google.protobuf.StringValue);
 }
 
 message RequestParameters {
@@ -58,4 +60,5 @@ message WindowTrace {
 message RouteMatchTrace {
     Trip trip = 1;
     repeated WindowTrace windowTraces = 2;
+    repeated google.protobuf.StringValue pointCandidates = 3;
 }

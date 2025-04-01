@@ -1,3 +1,5 @@
+#![feature(core_intrinsics)]
+
 mod debug;
 mod io;
 mod mapmatcher;
@@ -5,17 +7,18 @@ mod osm_preprocessing;
 mod route_matcher; // New route-based matching implementation
 mod tile_loader;
 
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
 use chrono::DateTime;
-use geo::{Coord, Point};
+use geo::{Coord, Distance, Haversine, Point};
 use http::Method;
 use io::google_maps_local_timeline::LocationHistoryEntry;
 use log::{debug, info, warn};
 use mapmatcher::TileConfig;
-use osm_preprocessing::RoadSegment;
+use osm_preprocessing::WaySegment;
 use proto::chronotopia_server::{Chronotopia, ChronotopiaServer};
 use proto::{LatLon, RequestParameters, RouteMatchTrace, Trip, Trips};
 use route_matcher::{RouteMatchJob, RouteMatcher, RouteMatcherConfig, WindowTrace};
@@ -32,7 +35,7 @@ use tower_http::cors::{Any, CorsLayer};
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::builder()
-        .filter_level(log::LevelFilter::Debug)
+        .filter_level(log::LevelFilter::Trace)
         .format_target(false)
         .format_timestamp(None)
         .target(env_logger::Target::Stderr)
@@ -46,7 +49,7 @@ async fn main() -> Result<()> {
         max_cached_tiles: 500,
         max_matching_distance: 150.0,
         tile_config: TileConfig {
-            base_tile_size: 0.5,
+            base_tile_size: 1.0,
             min_tile_density: 5000,
             max_split_depth: 2,
         },
@@ -80,8 +83,10 @@ async fn main() -> Result<()> {
     let addr = "[::1]:10000".parse()?;
     let mut chronotopia_service = ChronotopiaService {
         location_history,
-        route_matcher,
-        last_job: Arc::new(Mutex::new(None)),
+        route_matcher: Mutex::new(route_matcher),
+        last_job_trace: Arc::new(Mutex::new(None)),
+        processed_count: 0,
+        successful_matches: 0,
     };
 
     // Build trips with timeout protection
@@ -122,8 +127,10 @@ async fn main() -> Result<()> {
 
 struct ChronotopiaService {
     location_history: Vec<LocationHistoryEntry>,
-    route_matcher: RouteMatcher,
-    last_job: Arc<Mutex<Option<RouteMatchJob>>>,
+    route_matcher: Mutex<RouteMatcher>,
+    last_job_trace: Arc<Mutex<Option<RouteMatchTrace>>>,
+    successful_matches: usize,
+    processed_count: usize,
 }
 
 impl ChronotopiaService {
@@ -132,11 +139,10 @@ impl ChronotopiaService {
             "Building trips from {} location history entries using Route-Based Matcher",
             self.location_history.len()
         );
-        let mut processed_count = 0;
-        let mut successful_matches = 0;
-        let mut pending_job: Option<RouteMatchJob> = None;
+        let mut pending_trip: Option<Trip> = None;
+        let location_history = self.location_history.clone();
 
-        for entry in &self.location_history {
+        for entry in &location_history {
             if let LocationHistoryEntry::Timeline(tl) = entry {
                 let trip: Trip = tl.into();
                 if tl.timeline_path.len() < 2 {
@@ -149,101 +155,118 @@ impl ChronotopiaService {
                     if start.seconds > 1742501500 {
                         info!("Processing trip starting at {}", start.seconds);
 
-                        // Extract points and timestamps
-                        let mut gps_points = Vec::new();
-                        let mut timestamps = Vec::new();
-
-                        for p in &trip.points {
-                            if let Some(ts) = p.timestamp {
-                                if let Some(dt) =
-                                    DateTime::from_timestamp(ts.seconds, ts.nanos as u32)
-                                {
-                                    gps_points.push(Point::new(
-                                        p.latlon.unwrap().lon as f64,
-                                        p.latlon.unwrap().lat as f64,
-                                    ));
-                                    timestamps.push(dt);
-                                }
-                            }
-                        }
-
-                        if let Some(job) = pending_job.as_mut() {
+                        if let Some(ptrip) = pending_trip.as_mut() {
                             // Check if the last timestamp of the pending job is close to the start of the current one
                             // If so, combine, if not, run the pending job
-                            if *timestamps.first().unwrap() - job.timestamps.last().unwrap()
-                                < chrono::Duration::hours(1)
+                            if trip.points.first().unwrap().timestamp.unwrap().seconds
+                                - ptrip.points.first().unwrap().timestamp.unwrap().seconds
+                                < chrono::Duration::hours(1).num_seconds()
                             {
                                 debug!("Merging timeline entries");
-                                job.gps_points.extend(gps_points);
-                                job.timestamps.extend(timestamps);
+                                ptrip.points.extend(trip.points);
+                                ptrip.stop = trip.stop;
+
+                                continue;
                             } else {
-                                // Perform map matching with debug way IDs
-                                info!("Map matching trip with {} points", job.gps_points.len());
-
-                                match self
-                                    .route_matcher
-                                    .match_trace(pending_job.as_mut().unwrap())
-                                {
-                                    Ok(result) => {
-                                        successful_matches += 1;
-                                        info!(
-                                            "Map matching successful: {} segments matched ({}/{})",
-                                            result.len(),
-                                            successful_matches,
-                                            processed_count + 1
-                                        );
-
-                                        // Save matched route to GeoJSON file
-                                        let matched_geojson = road_segments_to_geojson(&result);
-                                        let matched_output_path = format!(
-                                            "sample/route_based_matched_{}.geojson",
-                                            start.seconds
-                                        );
-                                        std::fs::write(
-                                            matched_output_path.clone(),
-                                            serde_json::to_string_pretty(&matched_geojson)?,
-                                        )?;
-
-                                        info!(
-                                            "Route-based matched route saved to {}",
-                                            matched_output_path
-                                        );
-                                    }
-                                    Err(e) => {
-                                        warn!("Route-based map matching failed: {}", e);
-                                    }
-                                }
-
-                                if pending_job.is_some() {
-                                    let mut last_job = self.last_job.lock().await;
-                                    last_job.replace(pending_job.take().unwrap());
-                                }
-
-                                pending_job =
-                                    Some(RouteMatchJob::new(gps_points, timestamps, None));
-                                pending_job.as_mut().unwrap().activate_tracing();
+                                let trip = pending_trip.take().unwrap();
+                                self.build_trip(trip).await?;
+                                self.processed_count += 1;
                             }
-                        } else {
-                            pending_job = Some(RouteMatchJob::new(gps_points, timestamps, None));
-                            pending_job.as_mut().unwrap().activate_tracing();
                         }
 
-                        processed_count += 1;
+                        pending_trip = Some(trip);
                     }
                 }
+            }
+
+            // Handle last job
+            if let Some(trip) = pending_trip.take() {
+                self.build_trip(trip).await?;
+                self.processed_count += 1;
             }
         }
 
         info!(
             "Trip building completed. Processed: {}, Successful: {}",
-            processed_count, successful_matches
+            self.processed_count, self.successful_matches
         );
         Ok(())
+    }
+
+    async fn build_trip(&mut self, trip: Trip) -> Result<RouteMatchJob> {
+        // Extract points and timestamps
+        let mut gps_points = Vec::new();
+        let mut timestamps = Vec::new();
+
+        for p in &trip.points {
+            if let Some(ts) = p.timestamp {
+                if let Some(dt) = DateTime::from_timestamp(ts.seconds, ts.nanos as u32) {
+                    gps_points.push(Point::new(
+                        p.latlon.unwrap().lon as f64,
+                        p.latlon.unwrap().lat as f64,
+                    ));
+                    timestamps.push(dt);
+                }
+            }
+        }
+
+        let mut job = RouteMatchJob::new(gps_points, timestamps, None);
+        job.activate_tracing();
+
+        // Perform map matching with debug way IDs
+        info!("Map matching trip with {} points", job.gps_points.len());
+        let mut route_matcher = self.route_matcher.lock().await;
+
+        match route_matcher.match_trace(&mut job) {
+            Ok(result) => {
+                self.successful_matches += 1;
+                info!(
+                    "Map matching successful: {} segments matched ({}/{})",
+                    result.len(),
+                    self.successful_matches,
+                    self.processed_count + 1
+                );
+
+                // Save matched route to GeoJSON file
+                let matched_geojson = road_segments_to_geojson(&result);
+                let matched_output_path = format!(
+                    "sample/route_based_matched_{}.geojson",
+                    job.timestamps.first().unwrap().timestamp()
+                );
+                std::fs::write(
+                    matched_output_path.clone(),
+                    serde_json::to_string_pretty(&matched_geojson)?,
+                )?;
+
+                info!("Route-based matched route saved to {}", matched_output_path);
+            }
+            Err(e) => {
+                warn!("Route-based map matching failed: {}", e);
+            }
+        }
+
+        let mut last_job_trace = self.last_job_trace.lock().await;
+
+        let rmj: RouteMatchTrace = {
+            let window_trace = job.window_trace.borrow();
+            let point_candidates = job.point_candidates_geojson.borrow();
+            RouteMatchTrace {
+                trip: Some(trip),
+                window_traces: window_trace.iter().map(|v| v.into()).collect(),
+                point_candidates: point_candidates
+                    .iter()
+                    .map(|v| serde_json::to_string(v).unwrap().into())
+                    .collect(),
+            }
+        };
+        last_job_trace.replace(rmj);
+
+        Ok(job)
     }
 }
 
 /// Converts matched road segments into a GeoJSON LineString feature collection
-pub fn road_segments_to_geojson(segments: &[RoadSegment]) -> serde_json::Value {
+pub fn road_segments_to_geojson(segments: &[WaySegment]) -> serde_json::Value {
     let mut coordinates = Vec::new();
 
     // Helper to convert geo::Coord to GeoJSON format
@@ -318,28 +341,112 @@ impl Chronotopia for ChronotopiaService {
         &self,
         _request: Request<()>,
     ) -> Result<Response<RouteMatchTrace>, Status> {
-        let last_routejob = self.last_job.lock().await;
+        let last_routejob = self.last_job_trace.lock().await;
         if let Some(rj) = last_routejob.as_ref() {
-            let window_trace = rj.window_trace.borrow();
-            let rmj: RouteMatchTrace = RouteMatchTrace {
-                trip: None,
-                window_traces: window_trace.iter().map(|v| v.into()).collect(),
-            };
-            Ok(Response::new(rmj))
+            Ok(Response::new(rj.clone()))
         } else {
             Err(Status::not_found(""))
         }
     }
+
+    async fn osm_network_around_point(
+        &self,
+        request: Request<LatLon>,
+    ) -> Result<Response<prost::alloc::string::String>, Status> {
+        let point = request.into_inner();
+        let mut features = Vec::new();
+
+        // Add center point
+        features.push(json!({
+            "type": "Feature",
+            "properties": {
+            },
+            "geometry": {
+                "type": "Point",
+                "coordinates": [point.lon, point.lat]
+            }
+        }));
+
+        let radius_meters = 1000.0;
+        let mut segments_in_radius = HashSet::new();
+        let mut connections_count = HashMap::new();
+        let mut route_matcher = self.route_matcher.lock().await;
+        let segments: Vec<String> = route_matcher
+            .tile_loader
+            .loaded_tiles
+            .keys()
+            .cloned()
+            .collect();
+
+        for tile_id in segments {
+            let tile = route_matcher
+                .tile_loader
+                .load_tile(&tile_id)
+                .map_err(|e| Status::from_error(e.into()))?;
+
+            for segment in &tile.road_segments {
+                // Check if segment is within radius
+                let segment_center = segment.centroid();
+                let distance = Haversine.distance(Point::new(point.lon, point.lat), segment_center);
+
+                if distance <= radius_meters {
+                    segments_in_radius.insert(segment.id);
+
+                    // Count connection references
+                    for &conn_id in &segment.connections {
+                        *connections_count.entry(conn_id).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+
+        // Add all segments in radius
+        for &seg_id in &segments_in_radius {
+            if let Ok(segment) = route_matcher.tile_loader.get_segment(seg_id) {
+                let coords: Vec<Vec<f64>> =
+                    segment.coordinates.iter().map(|c| vec![c.x, c.y]).collect();
+
+                let incoming_count = connections_count.get(&segment.id).cloned().unwrap_or(0);
+                let outgoing_count = segment.connections.len();
+
+                features.push(json!({
+                        "type": "Feature",
+                        "properties": {
+                            "type": "network_segment",
+                            "segment_id": segment.id,
+                            "highway_type": segment.highway_type,
+                            "is_oneway": segment.is_oneway,
+                            "incoming_connections": incoming_count,
+                            "outgoing_connections": outgoing_count,
+                            "connections": segment.connections,
+                            "description": format!("Segment: {}, In: {}, Out: {}", segment.id, incoming_count, outgoing_count)
+                        },
+                        "geometry": {
+                            "type": "LineString",
+                            "coordinates": coords
+                        }
+                    }));
+            }
+        }
+
+        // Create GeoJSON
+        let geojson = json!({
+            "type": "FeatureCollection",
+            "features": features
+        });
+
+        Ok(Response::new(serde_json::to_string(&geojson).unwrap()))
+    }
 }
 
-impl From<&RoadSegment> for proto::RoadSegment {
-    fn from(value: &RoadSegment) -> Self {
+impl From<&WaySegment> for proto::RoadSegment {
+    fn from(value: &WaySegment) -> Self {
         Self {
             id: value.id,
             coordinates: value
                 .coordinates
                 .iter()
-                .map(|v| LatLon { lat: v.x, lon: v.y })
+                .map(|v| LatLon { lat: v.y, lon: v.x })
                 .collect(),
             is_oneway: value.is_oneway,
             highway_type: value.highway_type.clone(),

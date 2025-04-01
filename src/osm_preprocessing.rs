@@ -4,6 +4,7 @@ use geo::{Coord, LineString, Point, algorithm::Distance};
 use log::{debug, info};
 use osmpbf::{Element, ElementReader};
 use serde::{Deserialize, Serialize};
+use std::intrinsics::breakpoint;
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
@@ -14,7 +15,7 @@ use crate::mapmatcher::{TileConfig, calculate_heading};
 
 /// Represents a road segment in the processed network
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RoadSegment {
+pub struct WaySegment {
     pub id: u64,
     pub nodes: Vec<u64>,
     pub coordinates: Vec<Coord<f64>>,
@@ -25,7 +26,7 @@ pub struct RoadSegment {
     pub name: Option<String>,
 }
 
-impl RoadSegment {
+impl WaySegment {
     pub fn centroid(&self) -> Point<f64> {
         let start = self.coordinates.first().unwrap();
         let end = self.coordinates.last().unwrap();
@@ -91,7 +92,7 @@ impl RoadSegment {
 pub struct TileIndex {
     pub tile_id: String,
     pub bbox: geo_types::Rect<f64>,
-    pub road_segments: Vec<RoadSegment>,
+    pub road_segments: Vec<WaySegment>,
     pub segment_index: HashMap<u64, String>,
 }
 
@@ -181,7 +182,7 @@ impl OsmProcessor {
         &self,
         pbf_path: &str,
         node_locations: &HashMap<u64, Coord<f64>>,
-        road_segments: &mut Vec<RoadSegment>,
+        road_segments: &mut Vec<WaySegment>,
         node_connections: &mut HashMap<u64, Vec<u64>>,
     ) -> Result<()> {
         let start_time = Instant::now();
@@ -258,7 +259,7 @@ impl OsmProcessor {
                         .collect();
 
                     if coordinates.len() > 1 {
-                        let segment = RoadSegment {
+                        let segment = WaySegment {
                             id: way.id() as u64,
                             nodes: node_refs.clone(),
                             coordinates,
@@ -293,7 +294,7 @@ impl OsmProcessor {
 
     fn build_connectivity(
         &self,
-        road_segments: &mut [RoadSegment],
+        road_segments: &mut [WaySegment],
         node_connections: &HashMap<u64, Vec<u64>>,
     ) -> Result<()> {
         let start_time = Instant::now();
@@ -305,7 +306,7 @@ impl OsmProcessor {
         }
 
         // Function to find shared nodes between segments (prefixed with _ to avoid warning)
-        let _find_shared_nodes = |segment1: &RoadSegment, segment2: &RoadSegment| -> Vec<u64> {
+        let _find_shared_nodes = |segment1: &WaySegment, segment2: &WaySegment| -> Vec<u64> {
             let nodes1: HashSet<u64> = segment1.nodes.iter().cloned().collect();
             segment2
                 .nodes
@@ -394,9 +395,9 @@ impl OsmProcessor {
         Ok(())
     }
 
-    fn generate_tiles(&self, road_segments: Vec<RoadSegment>, output_dir: &str) -> Result<()> {
+    fn generate_tiles(&self, road_segments: Vec<WaySegment>, output_dir: &str) -> Result<()> {
         let start_time = Instant::now();
-        let mut tiles: HashMap<String, Vec<RoadSegment>> = HashMap::new();
+        let mut tiles: HashMap<String, Vec<WaySegment>> = HashMap::new();
         let mut segment_tile_map: HashMap<u64, String> = HashMap::new();
 
         for segment in road_segments {

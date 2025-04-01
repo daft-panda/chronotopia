@@ -15,7 +15,7 @@ use std::{
 }; // Import OrderedFloat for floating-point comparisons
 
 use crate::{
-    osm_preprocessing::{OsmProcessor, RoadSegment},
+    osm_preprocessing::{OsmProcessor, WaySegment},
     tile_loader::TileLoader,
 };
 
@@ -99,7 +99,7 @@ impl Default for TileConfig {
 /// Represents a candidate road segment for a GPS point
 #[derive(Clone, Debug)]
 pub struct Candidate {
-    pub segment: RoadSegment,
+    pub segment: WaySegment,
     pub point_on_edge: Point<f64>,
     pub distance: f64,
     pub heading_diff: f64,
@@ -193,7 +193,7 @@ impl MapMatcher {
         &mut self,
         gps_points: &[Point<f64>],
         timestamps: &[DateTime<Utc>],
-    ) -> Result<Vec<RoadSegment>> {
+    ) -> Result<Vec<WaySegment>> {
         if gps_points.is_empty() {
             return Ok(Vec::new());
         }
@@ -593,7 +593,7 @@ impl MapMatcher {
         &self,
         candidate_id: u64,
         current_path: &[u64],
-        loaded_segments: &HashMap<u64, RoadSegment>,
+        loaded_segments: &HashMap<u64, WaySegment>,
     ) -> bool {
         // Empty path can't form a loop
         if current_path.is_empty() {
@@ -669,7 +669,7 @@ impl MapMatcher {
         from: u64,
         to: u64,
         graph: &UnGraphMap<u64, f64>,
-        loaded_segments: &mut HashMap<u64, RoadSegment>,
+        loaded_segments: &mut HashMap<u64, WaySegment>,
     ) -> Result<(f64, Vec<u64>)> {
         if from == to {
             return Ok((0.0, vec![from]));
@@ -794,8 +794,8 @@ impl MapMatcher {
     fn reconstruct_geometry(
         &mut self,
         path: Vec<u64>,
-        loaded_segments: &HashMap<u64, RoadSegment>,
-    ) -> Result<Vec<RoadSegment>> {
+        loaded_segments: &HashMap<u64, WaySegment>,
+    ) -> Result<Vec<WaySegment>> {
         let mut result = Vec::new();
 
         for &seg_id in &path {
@@ -855,7 +855,7 @@ impl MapMatcher {
 
     fn score_segment(
         &mut self,
-        seg: &RoadSegment,
+        seg: &WaySegment,
         point: Point<f64>,
         prev_point: Option<Point<f64>>,
         timestamp: DateTime<Utc>,
@@ -918,7 +918,7 @@ impl MapMatcher {
         &self,
         new_segments: &[u64],
         existing_path: &[u64],
-        loaded_segments: &HashMap<u64, RoadSegment>,
+        loaded_segments: &HashMap<u64, WaySegment>,
     ) -> bool {
         // Combine paths for checking
         let mut full_path = existing_path.to_vec();
@@ -977,7 +977,7 @@ impl MapMatcher {
         false
     }
 
-    fn project_to_segment(&self, point: Point<f64>, seg: &RoadSegment) -> (Point<f64>, f64) {
+    fn project_to_segment(&self, point: Point<f64>, seg: &WaySegment) -> (Point<f64>, f64) {
         let line = LineString::from(seg.coordinates.clone());
         match line.closest_point(&point) {
             Closest::SinglePoint(projected) => {
@@ -992,8 +992,8 @@ impl MapMatcher {
     fn get_segment(
         &mut self,
         segment_id: u64,
-        loaded_segments: &mut HashMap<u64, RoadSegment>,
-    ) -> Result<RoadSegment> {
+        loaded_segments: &mut HashMap<u64, WaySegment>,
+    ) -> Result<WaySegment> {
         if let Some(segment) = loaded_segments.get(&segment_id) {
             return Ok(segment.clone());
         }
@@ -1031,7 +1031,7 @@ impl MapMatcher {
     }
 
     // Helper method to get segment map for a list of segment IDs
-    fn get_segment_map(&mut self, segment_ids: &[u64]) -> Result<HashMap<u64, RoadSegment>> {
+    fn get_segment_map(&mut self, segment_ids: &[u64]) -> Result<HashMap<u64, WaySegment>> {
         let mut segments = HashMap::new();
 
         for &seg_id in segment_ids {
@@ -1049,7 +1049,7 @@ impl MapMatcher {
     fn post_process_path(
         &self,
         path: &[u64],
-        loaded_segments: &HashMap<u64, RoadSegment>,
+        loaded_segments: &HashMap<u64, WaySegment>,
     ) -> Vec<u64> {
         if path.is_empty() {
             return Vec::new();
@@ -1402,7 +1402,7 @@ impl MapMatcher {
 }
 
 // Helper function moved outside of MapMatcher impl to avoid borrow checker issues
-fn calculate_transition_cost(from_seg: &RoadSegment, to_seg: &RoadSegment) -> f64 {
+fn calculate_transition_cost(from_seg: &WaySegment, to_seg: &WaySegment) -> f64 {
     // Calculate geographic distance between segments
     let from_end = from_seg.coordinates.last().unwrap();
     let to_start = to_seg.coordinates.first().unwrap();
@@ -1498,7 +1498,7 @@ pub fn calculate_road_class_score(highway_type: &str) -> f64 {
 
 pub fn matched_route_to_geojson(
     gps_points: &[Point<f64>],
-    matched_segments: &[RoadSegment],
+    matched_segments: &[WaySegment],
     _candidates_per_point: &[Vec<Candidate>], // Prefix with underscore to indicate intentionally unused
 ) -> Value {
     let mut features = Vec::new();

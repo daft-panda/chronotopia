@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
 
 use crate::mapmatcher::TileConfig;
-use crate::osm_preprocessing::{RoadSegment, TileIndex};
+use crate::osm_preprocessing::{TileIndex, WaySegment};
 
 /// Manages tile loading and caching with LRU eviction
 pub struct TileLoader {
@@ -435,7 +435,7 @@ impl TileLoader {
         ))
     }
 
-    pub fn get_segment(&mut self, seg_id: u64) -> Result<RoadSegment> {
+    pub fn get_segment(&mut self, seg_id: u64) -> Result<WaySegment> {
         let tile_id = self.find_segment_tile(seg_id)?;
 
         // Load tile and clone the segment we need

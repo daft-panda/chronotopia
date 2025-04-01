@@ -4,7 +4,7 @@
 // @ts-nocheck
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
-import { Message, proto3, protoInt64, Timestamp } from "@bufbuild/protobuf";
+import { Message, proto3, protoInt64, StringValue, Timestamp } from "@bufbuild/protobuf";
 
 /**
  * @generated from message chronotopia.RequestParameters
@@ -387,6 +387,11 @@ export class RouteMatchTrace extends Message<RouteMatchTrace> {
    */
   windowTraces: WindowTrace[] = [];
 
+  /**
+   * @generated from field: repeated google.protobuf.StringValue pointCandidates = 3;
+   */
+  pointCandidates: StringValue[] = [];
+
   constructor(data?: PartialMessage<RouteMatchTrace>) {
     super();
     proto3.util.initPartial(data, this);
@@ -397,6 +402,7 @@ export class RouteMatchTrace extends Message<RouteMatchTrace> {
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "trip", kind: "message", T: Trip },
     { no: 2, name: "windowTraces", kind: "message", T: WindowTrace, repeated: true },
+    { no: 3, name: "pointCandidates", kind: "message", T: StringValue, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RouteMatchTrace {
