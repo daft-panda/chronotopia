@@ -14,7 +14,7 @@ use std::{
 };
 
 use crate::{
-    osm_preprocessing::{StreamingOsmProcessor, WaySegment},
+    osm_preprocessing::{OSMProcessor, WaySegment},
     tile_loader::TileLoader,
 };
 
@@ -217,12 +217,10 @@ impl RouteMatcher {
     pub fn preprocess(&self) -> Result<()> {
         info!("Starting OSM data preprocessing");
         std::fs::create_dir_all(&self.config.tile_cache_dir)?;
-        // let processor = OsmProcessor::new(self.config.tile_config.clone());
-        // processor.process_pbf(&self.config.osm_pbf_path, &self.config.tile_cache_dir)?;
-        let processor = StreamingOsmProcessor::new(self.config.tile_config.clone())
+        let processor = OSMProcessor::new(self.config.tile_config.clone())
             .with_chunk_size(1_000_000) // Process 1M elements per chunk
             .with_batch_sizes(5_000_000, 500_000) // 5M nodes, 500K ways at once
-            .with_temp_dir(PathBuf::from("samples/temp")); // Custom temp directory
+            .with_temp_dir(PathBuf::from("sample/temp")); // Custom temp directory
 
         processor.process_pbf(&self.config.osm_pbf_path, &self.config.tile_cache_dir)?;
         info!("OSM preprocessing finished");
