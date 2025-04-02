@@ -54,7 +54,7 @@ async fn main() -> Result<()> {
     };
 
     // Create route matcher
-    let mut route_matcher = RouteMatcher::new(route_matcher_config.clone())?;
+    let route_matcher = RouteMatcher::new(route_matcher_config.clone())?;
 
     // Check if preprocessing is needed
     if !Path::new(&route_matcher_config.tile_cache_dir).exists() {
