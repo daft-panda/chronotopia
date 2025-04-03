@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 use geo::{Closest, ClosestPoint, Haversine, LineString, algorithm::Distance};
 use geo_types::Point;
-use log::{debug, info, trace, warn};
+use log::{debug, info};
 use ordered_float::OrderedFloat;
 use petgraph::prelude::UnGraphMap;
 use serde_json::{Value, json};
@@ -260,7 +260,7 @@ impl RouteMatcher {
 
         // Step 3: For each GPS point, find all candidate segments within accuracy range
         info!("Finding candidate segments for all GPS points");
-        self.find_all_candidate_segments(&job, loaded_tiles.clone())?;
+        self.find_all_candidate_segments(job, loaded_tiles.clone())?;
 
         // Step 4: Build route using sliding window approach
         info!("Building route using sliding window approach");
@@ -274,7 +274,7 @@ impl RouteMatcher {
 
         // Debug information about specified way IDs
         if let Some(way_ids) = &job.debug_way_ids {
-            self.debug_way_ids(&route, &way_ids, &loaded_tiles)?;
+            self.debug_way_ids(&route, way_ids, &loaded_tiles)?;
         }
 
         Ok(route)
@@ -638,37 +638,6 @@ impl RouteMatcher {
         5000.0
     }
 
-    /// Calculate how well a path covers GPS points
-    fn calculate_path_coverage(&self, path: &[WaySegment], points: &[Point<f64>]) -> f64 {
-        // Convert path to LineString for efficient distance calculations
-        let mut path_coordinates = Vec::new();
-
-        for segment in path {
-            for coord in &segment.coordinates {
-                path_coordinates.push(*coord);
-            }
-        }
-
-        // Create LineString
-        let path_line = LineString::from(path_coordinates);
-
-        // Calculate sum of distances from GPS points to path
-        let mut total_distance = 0.0;
-
-        for point in points {
-            let projected = match path_line.closest_point(point) {
-                Closest::SinglePoint(p) => p,
-                _ => *point, // Fallback
-            };
-
-            let distance = Haversine.distance(*point, projected);
-            total_distance += distance;
-        }
-
-        // Return average distance
-        total_distance / points.len() as f64
-    }
-
     /// Return new segments for route, avoiding duplicates
     fn new_segments_for_route(
         &self,
@@ -730,20 +699,6 @@ impl RouteMatcher {
             .get(&to)
             .ok_or_else(|| anyhow!("Destination segment not found"))?;
         let goal_point = to_segment.centroid();
-
-        // Create a mapping from original IDs to split segment IDs
-        // This helps us recognize segments that came from the same original segment
-        let mut original_id_map: HashMap<u64, Vec<u64>> = HashMap::new();
-        for (&id, segment) in segment_map.iter() {
-            // Use the segment's tracked original_id if available
-            let original_id = if let Some(orig_id) = segment.original_id {
-                orig_id
-            } else {
-                id
-            };
-
-            original_id_map.entry(original_id).or_default().push(id);
-        }
 
         // Initialize
         g_scores.insert(from, 0.0);
@@ -810,42 +765,6 @@ impl RouteMatcher {
                     Some(seg) => seg,
                     None => continue,
                 };
-
-                // For split segments, check if we've used any segments with the same original ID
-                // But allow crossing split segments if they're at different nodes
-                if neighbor != to {
-                    let orig_id = neighbor_segment.original_id.unwrap_or(neighbor);
-
-                    // Check if we'd create a loop by using segments from the same original segment
-                    let would_create_loop = original_id_map
-                        .get(&orig_id)
-                        .map(|ids| {
-                            ids.iter().any(|&id| {
-                                if used_segments.contains(&id) {
-                                    // Check if they're connected at a different node than the current connection
-                                    if let (Some(current_seg), Some(used_seg)) =
-                                        (segment_map.get(&current), segment_map.get(&id))
-                                    {
-                                        // Find common nodes
-                                        let current_split = current_seg.split_id;
-                                        let used_split = used_seg.split_id;
-
-                                        // If they have the same split node, they'd create a loop
-                                        current_split.is_some() && current_split == used_split
-                                    } else {
-                                        true
-                                    }
-                                } else {
-                                    false
-                                }
-                            })
-                        })
-                        .unwrap_or(false);
-
-                    if would_create_loop {
-                        continue;
-                    }
-                }
 
                 // Check if it exists in the graph
                 if !graph.as_ref().unwrap().contains_edge(current, neighbor) {
@@ -1016,100 +935,6 @@ impl RouteMatcher {
     }
 
     /// Debug function to track why specific way IDs were not chosen
-    fn debug_way_ids(
-        &mut self,
-        final_route: &[WaySegment],
-        way_ids: &[u64],
-        loaded_tiles: &HashSet<String>,
-    ) -> Result<()> {
-        // First check if any of the specified way IDs are in the final route
-        let route_segment_ids: HashSet<u64> = final_route.iter().map(|seg| seg.id).collect();
-
-        for &way_id in way_ids {
-            if route_segment_ids.contains(&way_id) {
-                info!("Debug: Way ID {} is included in the final route", way_id);
-                continue;
-            }
-
-            // Way ID not in final route, investigate why
-            info!(
-                "Debug: Way ID {} is NOT included in the final route",
-                way_id
-            );
-
-            // Check if the way ID exists in loaded tiles
-            let mut way_exists = false;
-            let mut way_segment: Option<WaySegment> = None;
-
-            for tile_id in loaded_tiles {
-                let tile = self.tile_loader.load_tile(tile_id)?;
-                if let Some(segment) = tile.road_segments.iter().find(|s| s.id == way_id) {
-                    way_exists = true;
-                    way_segment = Some(segment.clone());
-                    info!("Debug: Way ID {} exists in tile {}", way_id, tile_id);
-                    break;
-                }
-            }
-
-            if !way_exists {
-                info!("Debug: Way ID {} was not found in any loaded tile", way_id);
-                continue;
-            }
-
-            // Analyze closest GPS points to this segment
-            if let Some(segment) = way_segment {
-                let mut closest_distance = f64::MAX;
-                let mut closest_point_idx = 0;
-
-                for (i, point) in final_route.iter().enumerate() {
-                    // Use centroid of segment as reference point
-                    let segment_point = segment.centroid();
-                    let route_segment_point = point.centroid();
-
-                    let distance = Haversine.distance(segment_point, route_segment_point);
-                    if distance < closest_distance {
-                        closest_distance = distance;
-                        closest_point_idx = i;
-                    }
-                }
-
-                info!(
-                    "Debug: Way ID {} is closest to segment #{} in route (distance: {:.2}m)",
-                    way_id, closest_point_idx, closest_distance
-                );
-
-                // Check connections to nearby segments
-                let nearby_segment = &final_route[closest_point_idx];
-                let is_connected = segment.connections.contains(&nearby_segment.id)
-                    || nearby_segment.connections.contains(&segment.id);
-
-                if is_connected {
-                    info!(
-                        "Debug: Way ID {} is connected to segment {} in the route",
-                        way_id, nearby_segment.id
-                    );
-                } else {
-                    info!(
-                        "Debug: Way ID {} is NOT connected to segment {} in the route",
-                        way_id, nearby_segment.id
-                    );
-                }
-
-                // Analyze highway type and other attributes
-                info!(
-                    "Debug: Way ID {} is type '{}' (route segment is type '{}')",
-                    way_id, segment.highway_type, nearby_segment.highway_type
-                );
-
-                // Check if it would create a loop
-                let mut test_route = final_route.to_vec();
-                test_route.insert(closest_point_idx + 1, segment.clone());
-            }
-        }
-
-        Ok(())
-    }
-
     fn debug_point_candidates(&self, job: &RouteMatchJob, point_idx: usize) -> Result<Value> {
         let candidates = &job.all_candidates.borrow()[point_idx];
         let point = job.gps_points[point_idx];
@@ -1141,12 +966,13 @@ impl RouteMatcher {
             "properties": {
                 "type": "candidate_segment",
                 "segment_id": segment.id,
+                "osm_way_id": segment.osm_way_id, // Include OSM way ID
                 "rank": i,
                 "score": candidate.score,
                 "distance": candidate.distance,
                 "highway_type": segment.highway_type,
-                "description": format!("Segment ID: {}, Rank: {}, Score: {:.2}, Distance: {:.2}m", 
-                                       segment.id, i, candidate.score, candidate.distance)
+                "description": format!("Segment ID: {} (OSM: {}), Rank: {}, Score: {:.2}, Distance: {:.2}m", 
+                                       segment.id, segment.osm_way_id, i, candidate.score, candidate.distance)
             },
             "geometry": {
                 "type": "LineString",
@@ -1160,7 +986,8 @@ impl RouteMatcher {
                 "properties": {
                     "type": "projection",
                     "segment_id": segment.id,
-                    "description": format!("Projection to segment {}", segment.id)
+                    "osm_way_id": segment.osm_way_id, // Include OSM way ID
+                    "description": format!("Projection to segment {} (OSM: {})", segment.id, segment.osm_way_id)
                 },
                 "geometry": {
                     "type": "Point",
@@ -1176,6 +1003,125 @@ impl RouteMatcher {
         });
 
         Ok(geojson)
+    }
+
+    // Update the debug_way_ids method in route_matcher.rs to handle OSM way IDs
+    fn debug_way_ids(
+        &mut self,
+        final_route: &[WaySegment],
+        way_ids: &[u64],
+        loaded_tiles: &HashSet<String>,
+    ) -> Result<()> {
+        // First check if any of the specified way IDs are in the final route (now checking osm_way_id)
+        let route_osm_way_ids: HashSet<u64> =
+            final_route.iter().map(|seg| seg.osm_way_id).collect();
+
+        for &way_id in way_ids {
+            if route_osm_way_ids.contains(&way_id) {
+                info!(
+                    "Debug: OSM Way ID {} is included in the final route",
+                    way_id
+                );
+
+                // List all segments with this OSM way ID
+                let segments: Vec<&WaySegment> = final_route
+                    .iter()
+                    .filter(|seg| seg.osm_way_id == way_id)
+                    .collect();
+
+                for segment in segments {
+                    info!(
+                        "Debug: OSM Way ID {} corresponds to segment ID {}",
+                        way_id, segment.id,
+                    );
+                }
+                continue;
+            }
+
+            // Way ID not in final route, investigate why
+            info!(
+                "Debug: OSM Way ID {} is NOT included in the final route",
+                way_id
+            );
+
+            // Check if the way ID exists in loaded tiles
+            let mut way_exists = false;
+            let mut way_segment: Option<WaySegment> = None;
+
+            for tile_id in loaded_tiles {
+                let tile = self.tile_loader.load_tile(tile_id)?;
+                // Now search by osm_way_id instead of id
+                if let Some(segment) = tile.road_segments.iter().find(|s| s.osm_way_id == way_id) {
+                    way_exists = true;
+                    way_segment = Some(segment.clone());
+                    info!(
+                        "Debug: OSM Way ID {} exists in tile {} as segment ID {}",
+                        way_id, tile_id, segment.id
+                    );
+                    break;
+                }
+            }
+
+            if !way_exists {
+                info!(
+                    "Debug: OSM Way ID {} was not found in any loaded tile",
+                    way_id
+                );
+                continue;
+            }
+
+            // Analyze closest GPS points to this segment
+            if let Some(segment) = way_segment {
+                let mut closest_distance = f64::MAX;
+                let mut closest_point_idx = 0;
+
+                for (i, point) in final_route.iter().enumerate() {
+                    // Use centroid of segment as reference point
+                    let segment_point = segment.centroid();
+                    let route_segment_point = point.centroid();
+
+                    let distance = Haversine.distance(segment_point, route_segment_point);
+                    if distance < closest_distance {
+                        closest_distance = distance;
+                        closest_point_idx = i;
+                    }
+                }
+
+                info!(
+                    "Debug: OSM Way ID {} (segment ID {}) is closest to segment #{} in route (distance: {:.2}m)",
+                    way_id, segment.id, closest_point_idx, closest_distance
+                );
+
+                // Check connections to nearby segments
+                let nearby_segment = &final_route[closest_point_idx];
+                let is_connected = segment.connections.contains(&nearby_segment.id)
+                    || nearby_segment.connections.contains(&segment.id);
+
+                if is_connected {
+                    info!(
+                        "Debug: Segment ID {} (OSM Way ID {}) is connected to segment {} (OSM Way ID {}) in the route",
+                        segment.id, way_id, nearby_segment.id, nearby_segment.osm_way_id
+                    );
+                } else {
+                    info!(
+                        "Debug: Segment ID {} (OSM Way ID {}) is NOT connected to segment {} (OSM Way ID {}) in the route",
+                        segment.id, way_id, nearby_segment.id, nearby_segment.osm_way_id
+                    );
+                }
+
+                // Analyze highway type and other attributes
+                info!(
+                    "Debug: OSM Way ID {} is type '{}' (route segment is type '{}')",
+                    way_id, segment.highway_type, nearby_segment.highway_type
+                );
+
+                // Check if it would create a loop
+                let mut test_route = final_route.to_vec();
+                test_route.insert(closest_point_idx + 1, segment.clone());
+            }
+        }
+
+        Ok(())
     }
 
     /// Apply road class weight to edge cost in A* search
@@ -1207,92 +1153,6 @@ impl RouteMatcher {
         };
 
         base_cost * road_class_factor
-    }
-
-    /// Utility method to check connectivity between a list of way IDs
-    /// Returns a list of connectivity issues found
-    pub fn check_way_connectivity(&mut self, way_ids: &[u64]) -> Result<Vec<String>> {
-        if way_ids.len() < 2 {
-            return Ok(Vec::new()); // Nothing to check with fewer than 2 segments
-        }
-
-        let mut issues = Vec::new();
-
-        // Now check connectivity between consecutive way IDs
-        for i in 0..way_ids.len() - 1 {
-            let current_id = way_ids[i];
-            let next_id = way_ids[i + 1];
-
-            // Skip if they're the same segment
-            if current_id == next_id {
-                continue;
-            }
-
-            let current = self.tile_loader.get_segment(current_id).unwrap();
-            let next = self.tile_loader.get_segment(next_id).unwrap();
-
-            // Check if directly connected in OSM graph
-            let directly_connected =
-                current.connections.contains(&next_id) || next.connections.contains(&current_id);
-
-            if !directly_connected {
-                // Not directly connected, check distances between endpoints
-                let current_end = current.coordinates.last().unwrap();
-                let next_start = next.coordinates.first().unwrap();
-
-                let distance = Haversine.distance(
-                    Point::new(current_end.x, current_end.y),
-                    Point::new(next_start.x, next_start.y),
-                );
-
-                issues.push(format!(
-                    "Way IDs {} and {} at positions {}-{} are not directly connected (distance: {:.2}m). No connecting segments found.",
-                    current_id,
-                    next_id,
-                    i,
-                    i + 1,
-                    distance
-                ));
-
-                // Check if segments are in reverse order
-                if next.connections.contains(&current_id) && !current.connections.contains(&next_id)
-                {
-                    issues.push(format!(
-                        "Way IDs may be in reverse order: {} connects to {} but not vice versa",
-                        next_id, current_id
-                    ));
-                }
-
-                // Check road classes to see if it's a routing preference issue
-                issues.push(format!(
-                    "Road classes: {} is '{}', {} is '{}'",
-                    current_id, current.highway_type, next_id, next.highway_type
-                ));
-            }
-        }
-
-        // Check for potential loops
-        let unique_ids: HashSet<u64> = way_ids.iter().copied().collect();
-        if unique_ids.len() < way_ids.len() {
-            // There are duplicates - find them
-            let mut seen = HashSet::new();
-            let mut duplicates = Vec::new();
-
-            for (i, &id) in way_ids.iter().enumerate() {
-                if !seen.insert(id) {
-                    duplicates.push((id, i));
-                }
-            }
-
-            for (id, pos) in duplicates {
-                issues.push(format!(
-                "Way ID {} appears multiple times (last at position {}), indicating a potential loop",
-                id, pos
-            ));
-            }
-        }
-
-        Ok(issues)
     }
 }
 

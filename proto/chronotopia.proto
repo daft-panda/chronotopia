@@ -43,11 +43,12 @@ message Trips {
 
 message RoadSegment {
     uint64 id = 1;
-    repeated LatLon coordinates = 2;
-    bool is_oneway = 3;
-    string highway_type = 4;
-    repeated uint64 connections = 5;
-    optional string name = 6;
+    uint64 osm_way_id = 2;
+    repeated LatLon coordinates = 3;
+    bool is_oneway = 4;
+    string highway_type = 5;
+    repeated uint64 connections = 6;
+    optional string name = 7;
 }
 
 message WindowTrace {

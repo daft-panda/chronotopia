@@ -1,9 +1,8 @@
-use anyhow::{Context, Result, anyhow};
-use bincode::config::standard;
+use anyhow::Result;
 use geo::Haversine;
 use geo::{Coord, LineString, Point, algorithm::Distance};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use log::{debug, info, trace, warn};
+use log::{debug, info, warn};
 use osmpbf::{Element, ElementReader};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -23,8 +22,10 @@ use crate::route_matcher::{TileConfig, calculate_heading};
 
 /// Represents a road segment in the processed network
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct WaySegment {
     pub id: u64,
+    pub osm_way_id: u64,
     pub nodes: Vec<u64>,
     pub coordinates: Vec<Coord<f64>>,
     pub is_oneway: bool,
@@ -33,28 +34,9 @@ pub struct WaySegment {
     pub connections: Vec<u64>,
     pub name: Option<String>,
     pub metadata: Option<BTreeMap<String, String>>, // Store additional OSM tags
-    pub original_id: Option<u64>,                   // Track original ID for split segments
-    pub split_id: Option<u64>,                      // Track split node ID
 }
 
 // Default implementation for backward compatibility
-impl Default for WaySegment {
-    fn default() -> Self {
-        Self {
-            id: 0,
-            nodes: Vec::new(),
-            coordinates: Vec::new(),
-            is_oneway: false,
-            highway_type: String::new(),
-            max_speed: None,
-            connections: Vec::new(),
-            name: None,
-            metadata: None,
-            original_id: None,
-            split_id: None,
-        }
-    }
-}
 
 impl WaySegment {
     pub fn centroid(&self) -> Point<f64> {
@@ -159,11 +141,12 @@ struct WayEntry {
 pub struct OSMProcessor {
     config: TileConfig,
     // Configuration for streaming processing
-    chunk_size: usize,         // Number of elements per chunk
-    node_batch_size: usize,    // Number of nodes to process in memory at once
-    way_batch_size: usize,     // Number of ways to process in memory at once
-    num_threads: usize,        // Number of threads to use
-    temp_dir: Option<PathBuf>, // Optional custom temp directory
+    chunk_size: usize,                 // Number of elements per chunk
+    node_batch_size: usize,            // Number of nodes to process in memory at once
+    way_batch_size: usize,             // Number of ways to process in memory at once
+    num_threads: usize,                // Number of threads to use
+    temp_dir: Option<PathBuf>,         // Optional custom temp directory
+    next_segment_id: Arc<AtomicUsize>, // Track the next segment ID (0-based)
 }
 
 impl OSMProcessor {
@@ -175,6 +158,7 @@ impl OSMProcessor {
             way_batch_size: 500_000,    // Process 500K ways at once
             num_threads: rayon::current_num_threads(), // Use all available CPUs by default
             temp_dir: None,
+            next_segment_id: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -411,80 +395,73 @@ impl OSMProcessor {
             }
 
             // Process node buffer if it's full or we've reached a chunk boundary
-            if nodes_buffer.len() >= self.node_batch_size
-                || elements_processed % self.chunk_size == 0
-            {
-                if !nodes_buffer.is_empty() {
-                    // Get a new chunk ID
-                    let chunk_id = node_chunk_counter.fetch_add(1, Ordering::SeqCst);
+            if (nodes_buffer.len() >= self.node_batch_size || elements_processed % self.chunk_size == 0) && !nodes_buffer.is_empty() {
+                // Get a new chunk ID
+                let chunk_id = node_chunk_counter.fetch_add(1, Ordering::SeqCst);
 
-                    // Process these nodes (can be done in parallel for large batches)
-                    let file_path = nodes_dir.join(format!("nodes_{}.bin", chunk_id));
-                    let nodes_to_write = std::mem::replace(
-                        &mut nodes_buffer,
-                        Vec::with_capacity(self.node_batch_size),
-                    );
+                // Process these nodes (can be done in parallel for large batches)
+                let file_path = nodes_dir.join(format!("nodes_{}.bin", chunk_id));
+                let nodes_to_write = std::mem::replace(
+                    &mut nodes_buffer,
+                    Vec::with_capacity(self.node_batch_size),
+                );
 
-                    // Write in parallel - this would be even better with async I/O
-                    if let Ok(file) = File::create(&file_path) {
-                        let mut writer = BufWriter::new(file);
-                        let config = bincode::config::standard();
+                // Write in parallel - this would be even better with async I/O
+                if let Ok(file) = File::create(&file_path) {
+                    let mut writer = BufWriter::new(file);
+                    let config = bincode::config::standard();
 
-                        if bincode::serde::encode_into_std_write(
-                            &nodes_to_write,
-                            &mut writer,
-                            config,
-                        )
-                        .is_ok()
-                        {
-                            let mut chunks = node_chunks.lock().unwrap();
-                            chunks.push(ChunkMetadata {
-                                chunk_id,
-                                node_count: nodes_to_write.len(),
-                                way_count: 0,
-                                bounding_box: None,
-                                file_path: file_path.clone(),
-                            });
-                        }
+                    if bincode::serde::encode_into_std_write(
+                        &nodes_to_write,
+                        &mut writer,
+                        config,
+                    )
+                    .is_ok()
+                    {
+                        let mut chunks = node_chunks.lock().unwrap();
+                        chunks.push(ChunkMetadata {
+                            chunk_id,
+                            node_count: nodes_to_write.len(),
+                            way_count: 0,
+                            bounding_box: None,
+                            file_path: file_path.clone(),
+                        });
                     }
                 }
             }
 
             // Process way buffer if it's full or we've reached a chunk boundary
-            if ways_buffer.len() >= self.way_batch_size || elements_processed % self.chunk_size == 0
-            {
-                if !ways_buffer.is_empty() {
-                    // Get a new chunk ID
-                    let chunk_id = way_chunk_counter.fetch_add(1, Ordering::SeqCst);
+            if (ways_buffer.len() >= self.way_batch_size || elements_processed % self.chunk_size == 0) && !ways_buffer.is_empty() {
+                // Get a new chunk ID
+                let chunk_id = way_chunk_counter.fetch_add(1, Ordering::SeqCst);
 
-                    // Process these ways
-                    let file_path = ways_dir.join(format!("ways_{}.bin", chunk_id));
-                    let ways_to_write = std::mem::replace(
-                        &mut ways_buffer,
-                        Vec::with_capacity(self.way_batch_size),
-                    );
+                // Process these ways
+                let file_path = ways_dir.join(format!("ways_{}.bin", chunk_id));
+                let ways_to_write = std::mem::replace(
+                    &mut ways_buffer,
+                    Vec::with_capacity(self.way_batch_size),
+                );
 
-                    // Write in parallel
-                    if let Ok(file) = File::create(&file_path) {
-                        let mut writer = BufWriter::new(file);
-                        let config = bincode::config::standard();
+                // Write in parallel
+                if let Ok(file) = File::create(&file_path) {
+                    let mut writer = BufWriter::new(file);
+                    let config = bincode::config::standard();
 
-                        if bincode::serde::encode_into_std_write(
-                            &ways_to_write,
-                            &mut writer,
-                            config,
-                        )
-                        .is_ok()
-                        {
-                            let mut chunks = way_chunks.lock().unwrap();
-                            chunks.push(ChunkMetadata {
-                                chunk_id,
-                                node_count: 0,
-                                way_count: ways_to_write.len(),
-                                bounding_box: None,
-                                file_path: file_path.clone(),
-                            });
-                        }
+                    if bincode::serde::encode_into_std_write(
+                        &ways_to_write,
+                        &mut writer,
+                        config,
+                    )
+                    .is_ok()
+                    {
+                        let mut chunks = way_chunks.lock().unwrap();
+                        chunks.push(ChunkMetadata {
+                            chunk_id,
+                            node_count: 0,
+                            way_count: ways_to_write.len(),
+                            bounding_box: None,
+                            file_path: file_path.clone(),
+                        });
                     }
                 }
             }
@@ -707,8 +684,12 @@ impl OSMProcessor {
                             .collect();
 
                         if coordinates.len() > 1 {
+                            // Assign new sequential ID
+                            let new_id = self.next_segment_id.fetch_add(1, Ordering::SeqCst) as u64;
+
                             let segment = WaySegment {
-                                id: way.id,
+                                id: new_id,
+                                osm_way_id: way.id, // Original OSM way ID
                                 nodes: way.nodes.clone(),
                                 coordinates,
                                 is_oneway: way.is_oneway,
@@ -717,18 +698,16 @@ impl OSMProcessor {
                                 connections: Vec::new(),
                                 name: way.name,
                                 metadata: way.metadata,
-                                original_id: None,
-                                split_id: None,
                             };
 
                             road_segments.push(segment);
 
-                            // Build node-to-way index for connectivity
+                            // Build node-to-way index for connectivity using the new ID
                             for &node_id in &way.nodes {
                                 node_connections
                                     .entry(node_id)
                                     .or_insert_with(Vec::new)
-                                    .push(way.id);
+                                    .push(new_id); // Use new ID for connections
                             }
                         }
                     }
@@ -751,7 +730,6 @@ impl OSMProcessor {
                 }
             }
 
-            // Update progress
             pb.inc(1);
         });
 
@@ -831,14 +809,14 @@ impl OSMProcessor {
         info!("Building segment connectivity");
         let segment_pb = mp.add(ProgressBar::new(1));
 
-        // Create segment map for lookup
+        // Create segment map for lookup - use the segment's new ID as the key
         let mut all_segs = all_segments.lock().unwrap();
         let mut all_conns = all_node_connections.lock().unwrap();
 
         segment_pb.set_length(all_segs.len() as u64);
         segment_pb.set_style(ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} ({eta}) - Building connectivity")?
-            .progress_chars("##-"));
+        .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} ({eta}) - Building connectivity")?
+        .progress_chars("##-"));
 
         // Deduplicate connections
         for ways in all_conns.values_mut() {
@@ -846,7 +824,7 @@ impl OSMProcessor {
             ways.dedup();
         }
 
-        // Create segment map for lookup
+        // Create segment map for lookup using the new ID
         let mut segment_map = HashMap::new();
         for (i, segment) in all_segs.iter().enumerate() {
             segment_map.insert(segment.id, i);
@@ -870,7 +848,7 @@ impl OSMProcessor {
 
                 segment_pb.inc(1);
 
-                let segment_id = segment.id;
+                let segment_id = segment.id; // Use new ID for connectivity
                 let start_node = *segment.nodes.first().unwrap();
                 let end_node = *segment.nodes.last().unwrap();
 
@@ -921,7 +899,7 @@ impl OSMProcessor {
             for (id, connections) in local_connections {
                 all_connections
                     .entry(id)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .extend(connections);
             }
         });
@@ -1008,7 +986,7 @@ impl OSMProcessor {
 
                     // Serialize segments
                     let config = bincode::config::standard();
-                    if bincode::serde::encode_into_std_write(&segments, &mut writer, config).is_ok()
+                    if bincode::serde::encode_into_std_write(segments, &mut writer, config).is_ok()
                     {
                         let mut files = connected_files.lock().unwrap();
                         files.push(connected_file);

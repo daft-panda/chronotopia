@@ -261,27 +261,32 @@ export class RoadSegment extends Message<RoadSegment> {
   id = protoInt64.zero;
 
   /**
-   * @generated from field: repeated chronotopia.LatLon coordinates = 2;
+   * @generated from field: uint64 osm_way_id = 2;
+   */
+  osmWayId = protoInt64.zero;
+
+  /**
+   * @generated from field: repeated chronotopia.LatLon coordinates = 3;
    */
   coordinates: LatLon[] = [];
 
   /**
-   * @generated from field: bool is_oneway = 3;
+   * @generated from field: bool is_oneway = 4;
    */
   isOneway = false;
 
   /**
-   * @generated from field: string highway_type = 4;
+   * @generated from field: string highway_type = 5;
    */
   highwayType = "";
 
   /**
-   * @generated from field: repeated uint64 connections = 5;
+   * @generated from field: repeated uint64 connections = 6;
    */
   connections: bigint[] = [];
 
   /**
-   * @generated from field: optional string name = 6;
+   * @generated from field: optional string name = 7;
    */
   name?: string;
 
@@ -294,11 +299,12 @@ export class RoadSegment extends Message<RoadSegment> {
   static readonly typeName = "chronotopia.RoadSegment";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "id", kind: "scalar", T: 4 /* ScalarType.UINT64 */ },
-    { no: 2, name: "coordinates", kind: "message", T: LatLon, repeated: true },
-    { no: 3, name: "is_oneway", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
-    { no: 4, name: "highway_type", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 5, name: "connections", kind: "scalar", T: 4 /* ScalarType.UINT64 */, repeated: true },
-    { no: 6, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 2, name: "osm_way_id", kind: "scalar", T: 4 /* ScalarType.UINT64 */ },
+    { no: 3, name: "coordinates", kind: "message", T: LatLon, repeated: true },
+    { no: 4, name: "is_oneway", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 5, name: "highway_type", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 6, name: "connections", kind: "scalar", T: 4 /* ScalarType.UINT64 */, repeated: true },
+    { no: 7, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RoadSegment {

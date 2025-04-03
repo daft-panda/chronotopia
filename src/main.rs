@@ -203,8 +203,8 @@ impl ChronotopiaService {
             if let Some(ts) = p.timestamp {
                 if let Some(dt) = DateTime::from_timestamp(ts.seconds, ts.nanos as u32) {
                     gps_points.push(Point::new(
-                        p.latlon.unwrap().lon as f64,
-                        p.latlon.unwrap().lat as f64,
+                        p.latlon.unwrap().lon,
+                        p.latlon.unwrap().lat,
                     ));
                     timestamps.push(dt);
                 }
@@ -257,7 +257,7 @@ impl ChronotopiaService {
                 window_traces: window_trace.iter().map(|v| v.into()).collect(),
                 point_candidates: point_candidates
                     .iter()
-                    .map(|v| serde_json::to_string(v).unwrap().into())
+                    .map(|v| serde_json::to_string(v).unwrap())
                     .collect(),
             }
         };
@@ -267,7 +267,7 @@ impl ChronotopiaService {
     }
 }
 
-/// Converts matched road segments into a GeoJSON LineString feature collection
+// Update the road_segments_to_geojson function in main.rs to include OSM way ID
 pub fn road_segments_to_geojson(segments: &[WaySegment]) -> serde_json::Value {
     let mut coordinates = Vec::new();
     let mut segment_features = Vec::new();
@@ -301,10 +301,6 @@ pub fn road_segments_to_geojson(segments: &[WaySegment]) -> serde_json::Value {
 
     // Add each segment as an individual feature for better visualization and debugging
     for segment in segments {
-        // Get original ID from segment metadata
-        let original_id = segment.original_id.unwrap_or(segment.id);
-        let is_split = segment.split_id.is_some();
-
         // Extract layer information
         let layer = segment
             .metadata
@@ -327,7 +323,7 @@ pub fn road_segments_to_geojson(segments: &[WaySegment]) -> serde_json::Value {
         let segment_coords: Vec<Vec<f64>> = segment.coordinates.iter().map(coord_to_json).collect();
 
         // Create a unique color for each original segment ID for visual grouping
-        let color_hash = original_id % 360; // Use modulo for hue in HSL
+        let color_hash = segment.id % 360; // Use modulo for hue in HSL
 
         // Modify color based on layer - bridges are more saturated, tunnels are darker
         let segment_color = if is_bridge {
@@ -337,9 +333,9 @@ pub fn road_segments_to_geojson(segments: &[WaySegment]) -> serde_json::Value {
         } else if layer != 0 {
             // Non-zero layers get different lightness
             let lightness = if layer > 0 {
-                50 + (layer as u64 * 5) as u64
+                50 + (layer as u64 * 5)
             } else {
-                50 - ((layer.abs() as u64) * 5) as u64
+                50 - ((layer.unsigned_abs() as u64) * 5)
             };
             format!("hsl({}, 70%, {}%)", color_hash, lightness)
         } else {
@@ -356,14 +352,12 @@ pub fn road_segments_to_geojson(segments: &[WaySegment]) -> serde_json::Value {
             _ => 2,
         };
 
-        // Create feature with detailed properties
+        // Create feature with detailed properties, including both segment ID and OSM way ID
         segment_features.push(json!({
             "type": "Feature",
             "properties": {
                 "segment_id": segment.id,
-                "original_id": original_id,
-                "is_split": is_split,
-                "split_id": segment.split_id,
+                "osm_way_id": segment.osm_way_id,
                 "layer": layer,
                 "is_bridge": is_bridge,
                 "is_tunnel": is_tunnel,
@@ -373,9 +367,9 @@ pub fn road_segments_to_geojson(segments: &[WaySegment]) -> serde_json::Value {
                 "color": segment_color,
                 "weight": weight,
                 "opacity": 0.8,
-                "description": format!("ID: {} {}, Type: {}, Name: {}, Layer: {}{}{}",
+                "description": format!("ID: {} (OSM: {}), Type: {}, Name: {}, Layer: {}{}{}",
                     segment.id,
-                    if is_split { format!("(split at node {})", segment.split_id.unwrap_or(0)) } else { "".to_string() },
+                    segment.osm_way_id,
                     segment.highway_type,
                     segment.name.as_deref().unwrap_or("Unnamed"),
                     layer,
@@ -390,6 +384,7 @@ pub fn road_segments_to_geojson(segments: &[WaySegment]) -> serde_json::Value {
         }));
     }
 
+    // Add main route feature first, then individual segments
     let main_feature = json!({
         "type": "Feature",
         "properties": {
@@ -404,7 +399,7 @@ pub fn road_segments_to_geojson(segments: &[WaySegment]) -> serde_json::Value {
         }
     });
 
-    // Add main route feature first, then individual segments
+    // Create the final GeoJSON
     let mut features = Vec::new();
     features.push(main_feature);
     features.extend(segment_features);
@@ -549,9 +544,6 @@ impl Chronotopia for ChronotopiaService {
                         .and_then(|m| m.get("tunnel").map(|v| v == "yes"))
                         .unwrap_or(false);
 
-                    let is_split = segment.split_id.is_some();
-                    let original_id = segment.original_id.unwrap_or(segment.id);
-
                     // Color based on highway type and layer
                     let color = match (segment.highway_type.as_str(), layer) {
                         ("motorway", _) => "#ff0000",
@@ -581,6 +573,7 @@ impl Chronotopia for ChronotopiaService {
                         "properties": {
                             "type": "network_segment",
                             "segment_id": segment.id,
+                            "osm_way_id": segment.osm_way_id, // Include OSM way ID
                             "highway_type": segment.highway_type,
                             "is_oneway": segment.is_oneway,
                             "incoming_connections": incoming_count,
@@ -589,16 +582,14 @@ impl Chronotopia for ChronotopiaService {
                             "layer": layer,
                             "is_bridge": is_bridge,
                             "is_tunnel": is_tunnel,
-                            "is_split": is_split,
-                            "original_id": original_id,
-                            "split_id": segment.split_id,
+
                             "color": color,
                             "weight": weight,
-                            "opacity": if is_split { 0.9 } else { 0.7 },
+                            "opacity": 0.7 ,
                             "description": format!(
-                                "ID: {} {}, Type: {}, Name: {}, Layer: {}{}{}, In: {}, Out: {}", 
+                                "ID: {} (OSM: {}), Type: {}, Name: {}, Layer: {}{}{}, In: {}, Out: {}", 
                                 segment.id,
-                                if is_split { format!("(split at node {})", segment.split_id.unwrap_or(0)) } else { "".to_string() },
+                                segment.osm_way_id,
                                 segment.highway_type,
                                 segment.name.as_deref().unwrap_or("Unnamed"),
                                 layer,
@@ -613,31 +604,6 @@ impl Chronotopia for ChronotopiaService {
                             "coordinates": coords
                         }
                     }));
-
-                    // Add markers for split points to better visualize them
-                    if let Some(split_id) = segment.split_id {
-                        // Find the node with split_id in the coordinates
-                        if let Some(pos) = segment.nodes.iter().position(|&n| n == split_id) {
-                            if pos < segment.coordinates.len() {
-                                let split_point = &segment.coordinates[pos];
-
-                                features.push(json!({
-                                    "type": "Feature",
-                                    "properties": {
-                                        "type": "split_point",
-                                        "node_id": split_id,
-                                        "related_segment": segment.id,
-                                        "original_segment": original_id,
-                                        "description": format!("Split Node: {}", split_id)
-                                    },
-                                    "geometry": {
-                                        "type": "Point",
-                                        "coordinates": [split_point.x, split_point.y]
-                                    }
-                                }));
-                            }
-                        }
-                    }
                 }
             }
         }
@@ -656,6 +622,7 @@ impl From<&WaySegment> for proto::RoadSegment {
     fn from(value: &WaySegment) -> Self {
         Self {
             id: value.id,
+            osm_way_id: value.osm_way_id,
             coordinates: value
                 .coordinates
                 .iter()
