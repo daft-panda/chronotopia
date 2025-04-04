@@ -7,6 +7,7 @@ use osmpbf::{Element, ElementReader};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{
@@ -21,8 +22,7 @@ use std::{
 use crate::route_matcher::{TileConfig, calculate_heading};
 
 /// Represents a road segment in the processed network
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct WaySegment {
     pub id: u64,
     pub osm_way_id: u64,
@@ -236,11 +236,14 @@ impl OSMProcessor {
         info!("Step 5: Generating adaptive tiles in parallel");
         self.generate_tiles_parallel(&temp_dir, &connected_segment_files, output_dir, &mp)?;
 
-        // Cleanup temporary files (optional, comment out to keep for debugging)
-        if self.temp_dir.is_none() {
-            info!("Cleaning up temporary files");
-            std::fs::remove_dir_all(&temp_dir)?;
-        }
+        // Step 6: Write scratch file
+        self.update_segment_id_counter()?;
+
+        // // Cleanup temporary files (optional, comment out to keep for debugging)
+        // if self.temp_dir.is_none() {
+        //     info!("Cleaning up temporary files");
+        //     std::fs::remove_dir_all(&temp_dir)?;
+        // }
 
         info!("OSM processing completed in {:?}", start_time.elapsed());
         Ok(())
@@ -395,28 +398,25 @@ impl OSMProcessor {
             }
 
             // Process node buffer if it's full or we've reached a chunk boundary
-            if (nodes_buffer.len() >= self.node_batch_size || elements_processed % self.chunk_size == 0) && !nodes_buffer.is_empty() {
+            if (nodes_buffer.len() >= self.node_batch_size
+                || elements_processed % self.chunk_size == 0)
+                && !nodes_buffer.is_empty()
+            {
                 // Get a new chunk ID
                 let chunk_id = node_chunk_counter.fetch_add(1, Ordering::SeqCst);
 
                 // Process these nodes (can be done in parallel for large batches)
                 let file_path = nodes_dir.join(format!("nodes_{}.bin", chunk_id));
-                let nodes_to_write = std::mem::replace(
-                    &mut nodes_buffer,
-                    Vec::with_capacity(self.node_batch_size),
-                );
+                let nodes_to_write =
+                    std::mem::replace(&mut nodes_buffer, Vec::with_capacity(self.node_batch_size));
 
                 // Write in parallel - this would be even better with async I/O
                 if let Ok(file) = File::create(&file_path) {
                     let mut writer = BufWriter::new(file);
                     let config = bincode::config::standard();
 
-                    if bincode::serde::encode_into_std_write(
-                        &nodes_to_write,
-                        &mut writer,
-                        config,
-                    )
-                    .is_ok()
+                    if bincode::serde::encode_into_std_write(&nodes_to_write, &mut writer, config)
+                        .is_ok()
                     {
                         let mut chunks = node_chunks.lock().unwrap();
                         chunks.push(ChunkMetadata {
@@ -431,28 +431,25 @@ impl OSMProcessor {
             }
 
             // Process way buffer if it's full or we've reached a chunk boundary
-            if (ways_buffer.len() >= self.way_batch_size || elements_processed % self.chunk_size == 0) && !ways_buffer.is_empty() {
+            if (ways_buffer.len() >= self.way_batch_size
+                || elements_processed % self.chunk_size == 0)
+                && !ways_buffer.is_empty()
+            {
                 // Get a new chunk ID
                 let chunk_id = way_chunk_counter.fetch_add(1, Ordering::SeqCst);
 
                 // Process these ways
                 let file_path = ways_dir.join(format!("ways_{}.bin", chunk_id));
-                let ways_to_write = std::mem::replace(
-                    &mut ways_buffer,
-                    Vec::with_capacity(self.way_batch_size),
-                );
+                let ways_to_write =
+                    std::mem::replace(&mut ways_buffer, Vec::with_capacity(self.way_batch_size));
 
                 // Write in parallel
                 if let Ok(file) = File::create(&file_path) {
                     let mut writer = BufWriter::new(file);
                     let config = bincode::config::standard();
 
-                    if bincode::serde::encode_into_std_write(
-                        &ways_to_write,
-                        &mut writer,
-                        config,
-                    )
-                    .is_ok()
+                    if bincode::serde::encode_into_std_write(&ways_to_write, &mut writer, config)
+                        .is_ok()
                     {
                         let mut chunks = way_chunks.lock().unwrap();
                         chunks.push(ChunkMetadata {
@@ -874,19 +871,75 @@ impl OSMProcessor {
 
                                 // Check for oneway restriction on the other segment
                                 if other_segment.is_oneway {
-                                    // Only connect if we're at the start node of the other segment
-                                    if other_segment.nodes.first() == Some(&node) {
+                                    // For oneway segments, connect only if:
+                                    // 1. We're connecting from our end to the other's start
+                                    // 2. Or we're bidirectional and connecting to the other's start
+                                    if (node == end_node
+                                        && *other_segment.nodes.first().unwrap() == node)
+                                        || (!segment.is_oneway
+                                            && *other_segment.nodes.first().unwrap() == node)
+                                    {
                                         local_connections
                                             .entry(segment_id)
                                             .or_insert_with(Vec::new)
                                             .push(other_id);
                                     }
                                 } else {
-                                    // Non-oneway segments can connect at any point
-                                    local_connections
-                                        .entry(segment_id)
-                                        .or_insert_with(Vec::new)
-                                        .push(other_id);
+                                    // Non-oneway segments can connect at any endpoint
+                                    if *other_segment.nodes.first().unwrap() == node
+                                        || *other_segment.nodes.last().unwrap() == node
+                                    {
+                                        local_connections
+                                            .entry(segment_id)
+                                            .or_insert_with(Vec::new)
+                                            .push(other_id);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Handle shared intermediate nodes for improved connectivity
+                // This fixes cases where ways share nodes but aren't detected by endpoint check
+                for (i, &node_id) in segment.nodes.iter().enumerate() {
+                    // Skip endpoints which we already processed
+                    if i == 0 || i == segment.nodes.len() - 1 {
+                        continue;
+                    }
+
+                    // Find other segments that share this intermediate node
+                    if let Some(connected_segments) = all_conns.get(&node_id) {
+                        for &other_id in connected_segments {
+                            // Skip self-connections
+                            if other_id == segment_id {
+                                continue;
+                            }
+
+                            // Get other segment
+                            if let Some(&other_idx) = segment_map.get(&other_id) {
+                                let other_segment = &all_segs[other_idx];
+
+                                // Only connect if the node is an endpoint of the other segment
+                                let other_first = *other_segment.nodes.first().unwrap();
+                                let other_last = *other_segment.nodes.last().unwrap();
+
+                                if node_id == other_first || node_id == other_last {
+                                    // If our segment is oneway, only connect in the forward direction
+                                    if !segment.is_oneway || i < segment.nodes.len() - 1 {
+                                        local_connections
+                                            .entry(segment_id)
+                                            .or_insert_with(Vec::new)
+                                            .push(other_id);
+                                    }
+
+                                    // If other segment is not oneway or we're connecting to its start
+                                    if !other_segment.is_oneway || node_id == other_first {
+                                        local_connections
+                                            .entry(other_id)
+                                            .or_insert_with(Vec::new)
+                                            .push(segment_id);
+                                    }
                                 }
                             }
                         }
@@ -897,10 +950,7 @@ impl OSMProcessor {
             // Merge connections
             let mut all_connections = segment_connections.lock().unwrap();
             for (id, connections) in local_connections {
-                all_connections
-                    .entry(id)
-                    .or_default()
-                    .extend(connections);
+                all_connections.entry(id).or_default().extend(connections);
             }
         });
 
@@ -914,6 +964,121 @@ impl OSMProcessor {
             }
         }
 
+        info!("Enhancing connectivity with advanced topology checks");
+
+        // Set up progress tracking for enhanced connectivity
+        let connectivity_pb = mp.add(ProgressBar::new(all_segs.len() as u64));
+        connectivity_pb.set_style(ProgressStyle::default_bar()
+            .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} ({eta}) - Enhancing connectivity")?
+            .progress_chars("##-"));
+
+        // Build node-to-segment index
+        let mut node_to_segments: HashMap<u64, Vec<usize>> = HashMap::new();
+        for (i, segment) in all_segs.iter().enumerate() {
+            // Include ALL nodes, not just endpoints
+            for &node_id in &segment.nodes {
+                node_to_segments.entry(node_id).or_default().push(i);
+            }
+        }
+
+        // Track new connections to add (store them first, then apply them later)
+        let mut connections_to_add: Vec<(usize, usize)> = Vec::new();
+        let mut added_connections = 0;
+
+        // For each node that's shared by multiple segments
+        for (&node_id, segments_indices) in &node_to_segments {
+            if segments_indices.len() <= 1 {
+                continue; // No potential connections
+            }
+
+            // Check every pair of segments for potential connections
+            for (i, &seg_idx1) in segments_indices.iter().enumerate() {
+                for &seg_idx2 in segments_indices.iter().skip(i + 1) {
+                    // Skip if there's already a connection
+                    let seg1_id = all_segs[seg_idx1].id;
+                    let seg2_id = all_segs[seg_idx2].id;
+
+                    if all_segs[seg_idx1].connections.contains(&seg2_id)
+                        || all_segs[seg_idx2].connections.contains(&seg1_id)
+                    {
+                        continue;
+                    }
+
+                    // Copy relevant data from all_segs to avoid borrowing conflicts
+                    let segment1 = all_segs[seg_idx1].clone();
+                    let segment2 = all_segs[seg_idx2].clone();
+
+                    // Skip if they shouldn't connect (different layers, etc.)
+                    if !self.should_segments_connect(&segment1, &segment2) {
+                        continue;
+                    }
+
+                    // Check the position of the shared node in each segment
+                    let is_endpoint1 = segment1.nodes.first() == Some(&node_id)
+                        || segment1.nodes.last() == Some(&node_id);
+
+                    let is_endpoint2 = segment2.nodes.first() == Some(&node_id)
+                        || segment2.nodes.last() == Some(&node_id);
+
+                    // Case 1: Both endpoints - definite connection
+                    if is_endpoint1 && is_endpoint2 {
+                        connections_to_add.push((seg_idx1, seg_idx2));
+                        continue;
+                    }
+
+                    // Case 2: One endpoint, one intermediate - likely an intersection
+                    if is_endpoint1 || is_endpoint2 {
+                        connections_to_add.push((seg_idx1, seg_idx2));
+                        continue;
+                    }
+
+                    // Case 3: Both intermediate nodes - need additional checks
+
+                    // Check if they're from the same OSM way
+                    if segment1.osm_way_id == segment2.osm_way_id {
+                        connections_to_add.push((seg_idx1, seg_idx2));
+                        continue;
+                    }
+
+                    // Check for same name
+                    let same_name = match (&segment1.name, &segment2.name) {
+                        (Some(name1), Some(name2)) => name1 == name2 && !name1.is_empty(),
+                        _ => false,
+                    };
+
+                    // Check for multiple shared nodes (stronger evidence)
+                    let shared_nodes = segment1
+                        .nodes
+                        .iter()
+                        .filter(|n| segment2.nodes.contains(n))
+                        .count();
+
+                    // Check for compatible road types
+                    let compatible_roads =
+                        are_road_types_compatible(&segment1.highway_type, &segment2.highway_type);
+
+                    // If multiple factors suggest a connection, add it
+                    if (same_name && shared_nodes > 0)
+                        || (shared_nodes >= 2)
+                        || (compatible_roads && shared_nodes > 0)
+                    {
+                        connections_to_add.push((seg_idx1, seg_idx2));
+                    }
+                }
+
+                connectivity_pb.inc(1);
+            }
+        }
+
+        // Now apply all the connections at once, after we're done borrowing immutably
+        for (seg_idx1, seg_idx2) in connections_to_add {
+            let seg1_id = all_segs[seg_idx1].id;
+            let seg2_id = all_segs[seg_idx2].id;
+
+            all_segs[seg_idx1].connections.push(seg2_id);
+            all_segs[seg_idx2].connections.push(seg1_id);
+            added_connections += 2;
+        }
         segment_pb.finish_with_message("Connectivity built");
 
         // Split segments into geographic chunks for parallel tile generation
@@ -1008,6 +1173,69 @@ impl OSMProcessor {
         );
 
         Ok(result)
+    }
+
+    fn should_segments_connect(&self, segment1: &WaySegment, segment2: &WaySegment) -> bool {
+        // 1. Check for layer differences
+        let layer1 = segment1
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("layer").map(|l| l.parse::<i8>().unwrap_or(0)))
+            .unwrap_or(0);
+
+        let layer2 = segment2
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("layer").map(|l| l.parse::<i8>().unwrap_or(0)))
+            .unwrap_or(0);
+
+        if layer1 != layer2 {
+            return false;
+        }
+
+        // 2. Check bridge status
+        let is_bridge1 = segment1
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("bridge").map(|v| v == "yes"))
+            .unwrap_or(false);
+
+        let is_bridge2 = segment2
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("bridge").map(|v| v == "yes"))
+            .unwrap_or(false);
+
+        if is_bridge1 != is_bridge2 {
+            return false;
+        }
+
+        // 3. Check tunnel status
+        let is_tunnel1 = segment1
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("tunnel").map(|v| v == "yes"))
+            .unwrap_or(false);
+
+        let is_tunnel2 = segment2
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("tunnel").map(|v| v == "yes"))
+            .unwrap_or(false);
+
+        if is_tunnel1 != is_tunnel2 {
+            return false;
+        }
+
+        // 4. Check traffic direction (avoid connecting out of an oneway into the wrong direction)
+        if segment1.is_oneway && segment2.is_oneway {
+            // For oneway segments, ensure the flow makes sense
+            // This logic would depend on how segments are oriented
+            // ...
+        }
+
+        // All checks passed
+        true
     }
 
     /// Generate tiles from connected segments in parallel
@@ -1206,5 +1434,64 @@ impl OSMProcessor {
                 y: (y_tile as f64 + 1.0) * tile_size,
             },
         )
+    }
+
+    fn update_segment_id_counter(&self) -> Result<()> {
+        let current_id = self.next_segment_id.load(Ordering::SeqCst);
+
+        // Create a temp file path to avoid corruption if the program crashes during write
+        let temp_path = self
+            .temp_dir
+            .as_ref()
+            .unwrap()
+            .join("segment_id_counter.tmp");
+
+        // Write to a temporary file first
+        let mut file = File::create(&temp_path)?;
+        file.write_all(&current_id.to_le_bytes())?;
+        file.flush()?;
+
+        debug!(
+            "Updated segment ID counter to {} in scratch file",
+            current_id
+        );
+        Ok(())
+    }
+}
+
+pub(crate) fn are_road_types_compatible(type1: &str, type2: &str) -> bool {
+    // Same types are obviously compatible
+    if type1 == type2 {
+        return true;
+    }
+
+    // Define road class groups
+    let highway_classes: Vec<Vec<&str>> = vec![
+        vec!["motorway", "motorway_link"],
+        vec!["trunk", "trunk_link"],
+        vec!["primary", "primary_link"],
+        vec!["secondary", "secondary_link"],
+        vec!["tertiary", "tertiary_link"],
+        vec!["residential", "unclassified", "service"],
+        vec!["track", "path", "footway", "cycleway"],
+    ];
+
+    // Find which class each type belongs to
+    let class1 = highway_classes
+        .iter()
+        .position(|class| class.contains(&type1));
+    let class2 = highway_classes
+        .iter()
+        .position(|class| class.contains(&type2));
+
+    match (class1, class2) {
+        (Some(c1), Some(c2)) => {
+            // Same class or adjacent classes are compatible
+            (c1 as i32 - c2 as i32).abs() <= 1
+        }
+        _ => {
+            // Unknown type, be conservative
+            false
+        }
     }
 }

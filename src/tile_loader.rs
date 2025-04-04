@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use log::{debug, warn};
+use log::{debug, trace, warn};
 use ordered_float::OrderedFloat;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -10,7 +10,7 @@ use crate::route_matcher::TileConfig;
 
 /// Manages tile loading and caching with LRU eviction
 pub struct TileLoader {
-    tile_directory: String,
+    pub(crate) tile_directory: String,
     pub(crate) loaded_tiles: HashMap<String, TileIndex>,
     max_cached_tiles: usize,
     tile_config: TileConfig,
@@ -50,7 +50,7 @@ impl TileLoader {
 
         if needs_loading {
             let load_start = Instant::now();
-            debug!("Loading tile {} from disk", tile_id);
+            trace!("Loading tile {} from disk", tile_id);
 
             // Phase 1: Check if we need to evict a tile
             if self.loaded_tiles.len() >= self.max_cached_tiles {
@@ -77,7 +77,7 @@ impl TileLoader {
             self.loaded_tiles.insert(tile_id_clone.clone(), tile_index);
             self.update_tile_access(&tile_id_clone);
 
-            debug!("Tile {} loaded in {:?}", tile_id, load_start.elapsed());
+            trace!("Tile {} loaded in {:?}", tile_id, load_start.elapsed());
         } else {
             // Just update the access time for LRU
             self.update_tile_access(tile_id);
@@ -275,7 +275,7 @@ impl TileLoader {
 
         // Option 1: Use LRU queue for fast eviction
         if let Some(oldest_tile) = self.lru_queue.pop_front() {
-            debug!("Evicting LRU tile: {}", oldest_tile);
+            trace!("Evicting LRU tile: {}", oldest_tile);
             self.loaded_tiles.remove(&oldest_tile);
             self.tile_access_times.remove(&oldest_tile);
 

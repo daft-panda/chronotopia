@@ -1,4 +1,5 @@
 mod debug;
+mod intersection_processor;
 mod io;
 mod osm_preprocessing;
 mod route_matcher; // New route-based matching implementation
@@ -67,11 +68,18 @@ async fn main() -> Result<()> {
         );
     }
 
-    // let issues = route_matcher.check_way_connectivity(&vec![
+    // let test_way_ids = vec![
     //     794589960, 42339853, 794589959, 20442589, 237171377, 53752193,
-    // ]);
-    // println!("{:?}", issues);
-    // std::process::exit(0);
+    // ];
+    // //let test_way_ids = vec![227074422, 30086304];
+    // info!(
+    //     "Checking connectivity between test way IDs: {:?}",
+    //     test_way_ids
+    // );
+    // let issues = route_matcher.check_way_sequence_connectivity(&test_way_ids)?;
+    // for issue in &issues {
+    //     println!("{}", issue);
+    // }
 
     let mut file = File::open("sample/location-history.json").await?;
 
@@ -147,7 +155,6 @@ impl ChronotopiaService {
             if let LocationHistoryEntry::Timeline(tl) = entry {
                 let trip: Trip = tl.into();
                 if tl.timeline_path.len() < 2 {
-                    debug!("Skipping trip with less than 2 points");
                     continue;
                 }
 
@@ -202,10 +209,7 @@ impl ChronotopiaService {
         for p in &trip.points {
             if let Some(ts) = p.timestamp {
                 if let Some(dt) = DateTime::from_timestamp(ts.seconds, ts.nanos as u32) {
-                    gps_points.push(Point::new(
-                        p.latlon.unwrap().lon,
-                        p.latlon.unwrap().lat,
-                    ));
+                    gps_points.push(Point::new(p.latlon.unwrap().lon, p.latlon.unwrap().lat));
                     timestamps.push(dt);
                 }
             }
@@ -214,12 +218,23 @@ impl ChronotopiaService {
         let mut job = RouteMatchJob::new(gps_points, timestamps, None);
         job.activate_tracing();
 
+        job.expect_subsequence(
+            31,
+            33,
+            vec![
+                508483977, 783203095, 940072557, 783216745, 795038347, 47858106, 911339384,
+                45258353, 302391995, 955052792, 50485404, 438473867, 438473868, 438473845,
+                794589960, 42339853, 794589959, 20442589, 237171377, 53752193,
+            ],
+        );
+
         // Perform map matching with debug way IDs
         info!("Map matching trip with {} points", job.gps_points.len());
         let mut route_matcher = self.route_matcher.lock().await;
 
         match route_matcher.match_trace(&mut job) {
             Ok(result) => {
+                println!("{}", job.get_matching_explanation());
                 self.successful_matches += 1;
                 info!(
                     "Map matching successful: {} segments matched ({}/{})",
@@ -269,112 +284,30 @@ impl ChronotopiaService {
 
 // Update the road_segments_to_geojson function in main.rs to include OSM way ID
 pub fn road_segments_to_geojson(segments: &[WaySegment]) -> serde_json::Value {
-    let mut coordinates = Vec::new();
-    let mut segment_features = Vec::new();
+    let mut features = Vec::new();
 
     // Helper to convert geo::Coord to GeoJSON format
     let coord_to_json = |c: &Coord<f64>| vec![c.x, c.y];
 
-    // Create combined route feature (main feature)
+    // Add each segment as an individual feature
     for (i, segment) in segments.iter().enumerate() {
-        // For first segment, add all points
-        if i == 0 {
-            coordinates.extend(segment.coordinates.iter().map(coord_to_json));
-            continue;
-        }
+        // Extract metadata as before...
 
-        // Check connection to previous segment
-        let prev_last = coordinates.last().unwrap();
-        let current_first = &segment.coordinates[0];
-
-        // Compare with epsilon for floating point precision
-        if (prev_last[0] - current_first.x).abs() > f64::EPSILON
-            || (prev_last[1] - current_first.y).abs() > f64::EPSILON
-        {
-            // No connection - add all points
-            coordinates.extend(segment.coordinates.iter().map(coord_to_json));
-        } else {
-            // Connected - skip first point to avoid duplicate
-            coordinates.extend(segment.coordinates.iter().skip(1).map(coord_to_json));
-        }
-    }
-
-    // Add each segment as an individual feature for better visualization and debugging
-    for segment in segments {
-        // Extract layer information
-        let layer = segment
-            .metadata
-            .as_ref()
-            .and_then(|m| m.get("layer").map(|l| l.parse::<i8>().unwrap_or(0)))
-            .unwrap_or(0);
-
-        let is_bridge = segment
-            .metadata
-            .as_ref()
-            .and_then(|m| m.get("bridge").map(|v| v == "yes"))
-            .unwrap_or(false);
-
-        let is_tunnel = segment
-            .metadata
-            .as_ref()
-            .and_then(|m| m.get("tunnel").map(|v| v == "yes"))
-            .unwrap_or(false);
-
+        // Segment coordinates
         let segment_coords: Vec<Vec<f64>> = segment.coordinates.iter().map(coord_to_json).collect();
 
-        // Create a unique color for each original segment ID for visual grouping
-        let color_hash = segment.id % 360; // Use modulo for hue in HSL
-
-        // Modify color based on layer - bridges are more saturated, tunnels are darker
-        let segment_color = if is_bridge {
-            format!("hsl({}, 90%, 60%)", color_hash) // Brighter for bridges
-        } else if is_tunnel {
-            format!("hsl({}, 60%, 25%)", color_hash) // Darker for tunnels
-        } else if layer != 0 {
-            // Non-zero layers get different lightness
-            let lightness = if layer > 0 {
-                50 + (layer as u64 * 5)
-            } else {
-                50 - ((layer.unsigned_abs() as u64) * 5)
-            };
-            format!("hsl({}, 70%, {}%)", color_hash, lightness)
-        } else {
-            format!("hsl({}, 70%, 50%)", color_hash) // Standard color
-        };
-
-        // Select line width based on highway type
-        let weight = match segment.highway_type.as_str() {
-            "motorway" | "motorway_link" => 5,
-            "trunk" | "trunk_link" => 4,
-            "primary" | "primary_link" => 4,
-            "secondary" | "secondary_link" => 3,
-            "tertiary" | "tertiary_link" => 3,
-            _ => 2,
-        };
-
-        // Create feature with detailed properties, including both segment ID and OSM way ID
-        segment_features.push(json!({
+        // Add feature with segment information
+        features.push(json!({
             "type": "Feature",
             "properties": {
                 "segment_id": segment.id,
                 "osm_way_id": segment.osm_way_id,
-                "layer": layer,
-                "is_bridge": is_bridge,
-                "is_tunnel": is_tunnel,
-                "highway_type": segment.highway_type,
-                "is_oneway": segment.is_oneway,
-                "name": segment.name,
-                "color": segment_color,
-                "weight": weight,
-                "opacity": 0.8,
-                "description": format!("ID: {} (OSM: {}), Type: {}, Name: {}, Layer: {}{}{}",
+                // Other properties...
+                "order": i,
+                "description": format!("ID: {} (OSM: {}), Nodes: {}",
                     segment.id,
                     segment.osm_way_id,
-                    segment.highway_type,
-                    segment.name.as_deref().unwrap_or("Unnamed"),
-                    layer,
-                    if is_bridge { ", Bridge" } else { "" },
-                    if is_tunnel { ", Tunnel" } else { "" }
+                    segment.nodes.len()
                 )
             },
             "geometry": {
@@ -384,7 +317,37 @@ pub fn road_segments_to_geojson(segments: &[WaySegment]) -> serde_json::Value {
         }));
     }
 
-    // Add main route feature first, then individual segments
+    // Create a combined route ensuring no gaps between segments
+    let mut coordinates = Vec::new();
+
+    for (i, segment) in segments.iter().enumerate() {
+        // For first segment, add all points
+        if i == 0 {
+            coordinates.extend(segment.coordinates.iter().map(coord_to_json));
+            continue;
+        }
+
+        // Get previous segment
+        let prev_segment = &segments[i - 1];
+
+        // Check if segments connect properly
+        let prev_last = prev_segment.coordinates.last().unwrap();
+        let curr_first = segment.coordinates.first().unwrap();
+
+        // Calculate distance between end of previous and start of current
+        let distance =
+            ((prev_last.x - curr_first.x).powi(2) + (prev_last.y - curr_first.y).powi(2)).sqrt();
+
+        // If there's a small gap, add an explicit connection
+        if distance > 0.0001 && distance < 50.0 {
+            coordinates.push(vec![curr_first.x, curr_first.y]);
+        }
+
+        // Add all points of current segment
+        coordinates.extend(segment.coordinates.iter().map(coord_to_json));
+    }
+
+    // Add main route feature
     let main_feature = json!({
         "type": "Feature",
         "properties": {
@@ -399,10 +362,8 @@ pub fn road_segments_to_geojson(segments: &[WaySegment]) -> serde_json::Value {
         }
     });
 
-    // Create the final GeoJSON
-    let mut features = Vec::new();
-    features.push(main_feature);
-    features.extend(segment_features);
+    // Add main route first, then individual segments
+    features.insert(0, main_feature);
 
     json!({
         "type": "FeatureCollection",

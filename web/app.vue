@@ -176,6 +176,7 @@ const debugOSMAt = async (point: Point) => {
                 index }}</div>
           </template>
           <mgl-popup ref="popup">
+            {{ point.latlon?.lon }}, {{ point.latlon?.lat }}
             <button
               @click="debugGeojsonSource = JSON.parse(routeMatchTrace.pointCandidates[index].value) as GeoJSON<Geometry, GeoJsonProperties>">show
               candidates</button>
