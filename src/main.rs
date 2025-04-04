@@ -1,5 +1,4 @@
 mod debug;
-mod intersection_processor;
 mod io;
 mod osm_preprocessing;
 mod route_matcher; // New route-based matching implementation
