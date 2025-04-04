@@ -49,6 +49,10 @@ message RoadSegment {
     string highway_type = 5;
     repeated uint64 connections = 6;
     optional string name = 7;
+    optional uint32 interim_start_idx = 8;
+    optional uint32 interim_end_idx = 9;
+    // Adding original full segment coordinates for reference
+    repeated LatLon full_coordinates = 10;
 }
 
 message WindowTrace {

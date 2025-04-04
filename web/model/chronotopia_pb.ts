@@ -290,6 +290,23 @@ export class RoadSegment extends Message<RoadSegment> {
    */
   name?: string;
 
+  /**
+   * @generated from field: optional uint32 interim_start_idx = 8;
+   */
+  interimStartIdx?: number;
+
+  /**
+   * @generated from field: optional uint32 interim_end_idx = 9;
+   */
+  interimEndIdx?: number;
+
+  /**
+   * Adding original full segment coordinates for reference
+   *
+   * @generated from field: repeated chronotopia.LatLon full_coordinates = 10;
+   */
+  fullCoordinates: LatLon[] = [];
+
   constructor(data?: PartialMessage<RoadSegment>) {
     super();
     proto3.util.initPartial(data, this);
@@ -305,6 +322,9 @@ export class RoadSegment extends Message<RoadSegment> {
     { no: 5, name: "highway_type", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 6, name: "connections", kind: "scalar", T: 4 /* ScalarType.UINT64 */, repeated: true },
     { no: 7, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
+    { no: 8, name: "interim_start_idx", kind: "scalar", T: 13 /* ScalarType.UINT32 */, opt: true },
+    { no: 9, name: "interim_end_idx", kind: "scalar", T: 13 /* ScalarType.UINT32 */, opt: true },
+    { no: 10, name: "full_coordinates", kind: "message", T: LatLon, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RoadSegment {

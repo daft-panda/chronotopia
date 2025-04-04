@@ -14,10 +14,11 @@ use geo::{Coord, Distance, Haversine, Point};
 use http::Method;
 use io::google_maps_local_timeline::LocationHistoryEntry;
 use log::{debug, info, warn};
-use osm_preprocessing::WaySegment;
 use proto::chronotopia_server::{Chronotopia, ChronotopiaServer};
 use proto::{LatLon, RequestParameters, RouteMatchTrace, Trip, Trips};
-use route_matcher::{RouteMatchJob, RouteMatcher, RouteMatcherConfig, TileConfig, WindowTrace};
+use route_matcher::{
+    MatchedWaySegment, RouteMatchJob, RouteMatcher, RouteMatcherConfig, TileConfig, WindowTrace,
+};
 use serde_json::json;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
@@ -282,18 +283,33 @@ impl ChronotopiaService {
 }
 
 // Update the road_segments_to_geojson function in main.rs to include OSM way ID
-pub fn road_segments_to_geojson(segments: &[WaySegment]) -> serde_json::Value {
+pub fn road_segments_to_geojson(segments: &[MatchedWaySegment]) -> serde_json::Value {
     let mut features = Vec::new();
 
     // Helper to convert geo::Coord to GeoJSON format
     let coord_to_json = |c: &Coord<f64>| vec![c.x, c.y];
 
     // Add each segment as an individual feature
-    for (i, segment) in segments.iter().enumerate() {
-        // Extract metadata as before...
+    for (i, matched_segment) in segments.iter().enumerate() {
+        let segment = &matched_segment.segment;
+
+        // Get the actual coordinates considering interim points
+        let actual_coords = matched_segment.coordinates();
+        if actual_coords.is_empty() {
+            continue;
+        }
+
+        // Get the actual nodes
+        let actual_nodes = matched_segment.nodes();
+
+        // Start and end indices
+        let start_idx = matched_segment.interim_start_idx.unwrap_or(0);
+        let end_idx = matched_segment
+            .interim_end_idx
+            .unwrap_or(segment.coordinates.len() - 1);
 
         // Segment coordinates
-        let segment_coords: Vec<Vec<f64>> = segment.coordinates.iter().map(coord_to_json).collect();
+        let segment_coords: Vec<Vec<f64>> = actual_coords.iter().map(coord_to_json).collect();
 
         // Add feature with segment information
         features.push(json!({
@@ -301,11 +317,16 @@ pub fn road_segments_to_geojson(segments: &[WaySegment]) -> serde_json::Value {
             "properties": {
                 "segment_id": segment.id,
                 "osm_way_id": segment.osm_way_id,
-                // Other properties...
+                "start_idx": start_idx,
+                "end_idx": end_idx,
+                "orig_nodes": segment.nodes.len(),
+                "used_nodes": actual_nodes.len(),
                 "order": i,
-                "description": format!("ID: {} (OSM: {}), Nodes: {}",
+                "description": format!("ID: {} (OSM: {}), Using nodes {}-{} of {}",
                     segment.id,
                     segment.osm_way_id,
+                    start_idx,
+                    end_idx,
                     segment.nodes.len()
                 )
             },
@@ -319,19 +340,28 @@ pub fn road_segments_to_geojson(segments: &[WaySegment]) -> serde_json::Value {
     // Create a combined route ensuring no gaps between segments
     let mut coordinates = Vec::new();
 
-    for (i, segment) in segments.iter().enumerate() {
-        // For first segment, add all points
-        if i == 0 {
-            coordinates.extend(segment.coordinates.iter().map(coord_to_json));
+    for (i, matched_segment) in segments.iter().enumerate() {
+        let actual_coords = matched_segment.coordinates();
+        if actual_coords.is_empty() {
             continue;
         }
 
-        // Get previous segment
-        let prev_segment = &segments[i - 1];
+        // For first segment, add all points
+        if i == 0 {
+            coordinates.extend(actual_coords.iter().map(coord_to_json));
+            continue;
+        }
+
+        // Get previous segment's coordinates
+        let prev_actual_coords = segments[i - 1].coordinates();
+        if prev_actual_coords.is_empty() {
+            coordinates.extend(actual_coords.iter().map(coord_to_json));
+            continue;
+        }
 
         // Check if segments connect properly
-        let prev_last = prev_segment.coordinates.last().unwrap();
-        let curr_first = segment.coordinates.first().unwrap();
+        let prev_last = prev_actual_coords.last().unwrap();
+        let curr_first = actual_coords.first().unwrap();
 
         // Calculate distance between end of previous and start of current
         let distance =
@@ -343,8 +373,34 @@ pub fn road_segments_to_geojson(segments: &[WaySegment]) -> serde_json::Value {
         }
 
         // Add all points of current segment
-        coordinates.extend(segment.coordinates.iter().map(coord_to_json));
+        coordinates.extend(actual_coords.iter().map(coord_to_json));
     }
+
+    // Add junction points as a separate feature
+    let mut junction_points = Vec::new();
+    for i in 0..segments.len() - 1 {
+        if let (Some(end_node), Some(start_node)) =
+            (segments[i].end_node(), segments[i + 1].start_node())
+        {
+            if end_node == start_node {
+                // This is a junction point
+                if let Some(coord) = segments[i].segment.coordinates.last() {
+                    junction_points.push(json!({
+                        "type": "Feature",
+                        "properties": {
+                            "type": "junction",
+                            "node_id": end_node
+                        },
+                        "geometry": {
+                            "type": "Point",
+                            "coordinates": [coord.x, coord.y]
+                        }
+                    }));
+                }
+            }
+        }
+    }
+    features.extend(junction_points);
 
     // Add main route feature
     let main_feature = json!({
@@ -578,20 +634,34 @@ impl Chronotopia for ChronotopiaService {
     }
 }
 
-impl From<&WaySegment> for proto::RoadSegment {
-    fn from(value: &WaySegment) -> Self {
+impl From<&MatchedWaySegment> for proto::RoadSegment {
+    fn from(matched_segment: &MatchedWaySegment) -> Self {
+        let segment = &matched_segment.segment;
+
+        // Get the actual coordinates based on interim indices
+        let coords = matched_segment.coordinates();
+
+        // Save the original full coordinates for reference
+        let full_coords = segment
+            .coordinates
+            .iter()
+            .map(|v| proto::LatLon { lat: v.y, lon: v.x })
+            .collect();
+
         Self {
-            id: value.id,
-            osm_way_id: value.osm_way_id,
-            coordinates: value
-                .coordinates
+            id: segment.id,
+            osm_way_id: segment.osm_way_id,
+            coordinates: coords
                 .iter()
-                .map(|v| LatLon { lat: v.y, lon: v.x })
+                .map(|v| proto::LatLon { lat: v.y, lon: v.x })
                 .collect(),
-            is_oneway: value.is_oneway,
-            highway_type: value.highway_type.clone(),
-            connections: value.connections.clone(),
-            name: value.name.clone(),
+            is_oneway: segment.is_oneway,
+            highway_type: segment.highway_type.clone(),
+            connections: segment.connections.clone(),
+            name: segment.name.clone(),
+            interim_start_idx: matched_segment.interim_start_idx.map(|idx| idx as u32),
+            interim_end_idx: matched_segment.interim_end_idx.map(|idx| idx as u32),
+            full_coordinates: full_coords,
         }
     }
 }
