@@ -1,8 +1,11 @@
 use anyhow::{Result, anyhow, bail};
 use chrono::{DateTime, Utc};
-use geo::{Closest, ClosestPoint, Haversine, Intersects, LineString, algorithm::Distance};
+use core::f64;
+use geo::{
+    Closest, ClosestPoint, EuclideanLength, Haversine, Intersects, LineString, algorithm::Distance,
+};
 use geo_types::Point;
-use log::{debug, info, warn};
+use log::{debug, info, trace, warn};
 use ordered_float::OrderedFloat;
 use petgraph::prelude::UnGraphMap;
 use serde::{Deserialize, Serialize};
@@ -10,7 +13,7 @@ use serde_json::{Value, json};
 use std::{
     cell::RefCell,
     cmp::Ordering,
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
 };
 
@@ -18,6 +21,8 @@ use crate::{
     osm_preprocessing::{OSMProcessor, TileIndex, WaySegment, are_road_types_compatible},
     tile_loader::TileLoader,
 };
+
+const MAX_DISTANCE_BETWEEN_POINT_AND_MATCHED_SEGMENT_METER: f64 = 150.0;
 
 #[derive(Debug, Clone)]
 pub struct TileConfig {
@@ -135,17 +140,68 @@ pub(crate) struct WindowTrace {
     pub(crate) end: usize,
     pub(crate) segments: Vec<MatchedWaySegment>,
     pub(crate) bridge: bool,
+    pub(crate) constraints: Vec<PointConstraint>, // Constraints used for this window
+    pub(crate) used_constraints: bool,            // Was this window matched with constraints
+    pub(crate) constraint_score: Option<f64>,     // Score with constraints
+    pub(crate) unconstrained_score: Option<f64>,  // Score without constraints
+    pub(crate) attempted_way_ids: Vec<u64>,       // Way IDs that were considered
+    pub(crate) debug_notes: Vec<String>,          // Additional debugging notes
+}
+
+#[derive(Debug, Clone)]
+pub struct PointConstraint {
+    pub point_idx: usize,
+    pub segment_id: u64,
+    pub way_id: u64,   // OSM way ID for easier debugging
+    pub distance: f64, // Distance to the point
 }
 
 /// Structure to represent a candidate segment for a GPS point
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct SegmentCandidate {
-    segment: WaySegment,
-    distance: f64,          // Distance from GPS point to segment
-    projection: Point<f64>, // Projected point on segment
-    score: f64,             // Overall score (lower is better)
+    pub(crate) segment: WaySegment,
+    pub(crate) distance: f64,          // Distance from GPS point to segment
+    pub(crate) projection: Point<f64>, // Projected point on segment
+    pub(crate) score: f64,             // Overall score (lower is better)
 }
 
+#[derive(Debug, Clone)]
+pub struct PathfindingDebugInfo {
+    pub start_point_idx: usize,
+    pub end_point_idx: usize,
+    pub start_candidates: Vec<SegmentCandidate>,
+    pub end_candidates: Vec<SegmentCandidate>,
+    pub constraints: Vec<(usize, u64)>,
+    pub attempted_pairs: Vec<PathfindingAttempt>,
+    pub constrained_candidates: HashMap<usize, Vec<u64>>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PathfindingAttempt {
+    pub from_segment: u64,
+    pub from_osm_way: u64,
+    pub to_segment: u64,
+    pub to_osm_way: u64,
+    pub distance: f64,
+    pub result: PathfindingResult,
+}
+
+#[derive(Debug, Clone)]
+pub enum PathfindingResult {
+    Success(Vec<WaySegment>, f64),
+    TooFar(f64, f64),
+    NoConnection,
+    NoPathFound(String),
+}
+
+impl PathfindingResult {
+    pub fn is_success(&self) -> bool {
+        matches!(self, PathfindingResult::Success(_, _))
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct RouteMatchJob {
     // inputs
     pub(crate) gps_points: Vec<Point<f64>>,
@@ -390,9 +446,7 @@ impl MatchedWaySegment {
                 start_idx, end_idx, self.segment.id
             );
             // Return a sensible default or swap them
-            let temp = start_idx;
-            start_idx = end_idx;
-            end_idx = temp;
+            std::mem::swap(&mut start_idx, &mut end_idx);
         }
 
         self.segment.coordinates[start_idx..=end_idx].to_vec()
@@ -576,7 +630,7 @@ impl RouteMatcher {
     }
 
     /// Find all candidate segments within accuracy range for each GPS point
-    fn find_all_candidate_segments(
+    pub(crate) fn find_all_candidate_segments(
         &mut self,
         job: &RouteMatchJob,
         loaded_tiles: HashSet<String>,
@@ -688,66 +742,232 @@ impl RouteMatcher {
         );
 
         let mut complete_route = Vec::new();
-        let mut window_start = 0;
-        let mut window_index: usize = 0;
 
         // Track which segments were chosen for each GPS point in previous windows
         let mut previous_point_segments: HashMap<usize, u64> = HashMap::new();
 
+        // Calculate the windows in advance to handle the last window specially
+        let mut windows = VecDeque::new();
+        let mut window_start = 0;
+
         while window_start < job.gps_points.len() {
-            let window_end = (window_start + window_size - 1).min(job.gps_points.len() - 1);
+            let mut window_end = (window_start + window_size - 1).min(job.gps_points.len() - 1);
+
+            // Check if this would leave a small last window
+            let points_remaining = job.gps_points.len() - window_end - 1;
+            if points_remaining > 0 && points_remaining < step_size {
+                // This is the second-to-last window, make it larger to include all remaining points
+                window_end = job.gps_points.len() - 1;
+                windows.push_back((window_start, window_end));
+                break; // No more windows needed
+            }
+
+            windows.push_back((window_start, window_end));
+            window_start += step_size;
+        }
+
+        // Special case: If the last window has only one point and it's not already
+        // included in the previous window, merge it with the previous window
+        if windows.len() >= 2 {
+            // Explicitly handle the last window to avoid borrowing issues
+            let last_idx = windows.len() - 1;
+            let last_start = windows[last_idx].0;
+            let last_end = windows[last_idx].1;
+
+            // Check if it's a single-point window
+            if last_start == last_end {
+                // Remove the last window
+                windows.pop_back();
+
+                // Extend the previous window (now the last) to include the single point
+                let prev_idx = windows.len() - 1;
+                windows[prev_idx].1 = last_start;
+            }
+        }
+
+        debug!("Created {} windows for processing", windows.len());
+        for (i, (start, end)) in windows.iter().enumerate() {
+            trace!("Window {}: points {}-{}", i + 1, start, end);
+        }
+
+        // Initialize the window_trace array with default values for all windows
+        if job.tracing {
+            let mut window_traces = job.window_trace.borrow_mut();
+            window_traces.resize_with(windows.len(), WindowTrace::default);
+        }
+
+        // Track windows with failed constraints for debugging
+        let mut failed_windows = Vec::new();
+        let mut debug_infos = Vec::new();
+        let mut i: i32 = -1;
+
+        // Process each window
+        while !windows.is_empty() {
+            i += 1;
+            let (window_start, window_end) = windows.pop_front().unwrap();
+
+            let window_index = if i < 0 { 0 } else { i as usize };
 
             info!(
                 "Processing window {} from point {} to {} (of {})",
-                window_index,
+                window_index + 1,
                 window_start,
                 window_end,
                 job.gps_points.len() - 1
             );
 
-            window_index += 1;
-
             // Create a list of previously matched point constraints for this window
-            let overlapping_points: Vec<(usize, u64)> = (window_start..=window_end)
+            let mut overlapping_points: Vec<(usize, u64)> = (window_start..=window_end)
                 .filter_map(|idx| {
                     previous_point_segments
                         .get(&idx)
                         .map(|&seg_id| (idx, seg_id))
                 })
                 .collect();
+            // Do not include the last matched point of the previous window as a constraint as it
+            // has a high(er) chance of being wrong
+            overlapping_points.pop();
+
+            // Is this the last window?
+            let is_last_window = windows.is_empty();
+            // Add the best closest matching segment to the end node as a constraint
+            if is_last_window {
+                let mut distance = f64::INFINITY;
+                let mut best_candidate = None;
+                let candidates = job.all_candidates.borrow();
+                for candidate in candidates.get(window_end).unwrap() {
+                    if candidate.distance < distance {
+                        best_candidate = Some(candidate.segment.id);
+                        distance = candidate.distance;
+                    }
+                }
+                overlapping_points.push((window_end, best_candidate.unwrap()));
+            }
+
+            // Record current constraints for debugging purposes
+            let mut constraint_details = Vec::new();
+            for &(point_idx, segment_id) in &overlapping_points {
+                // Find the segment in the segment map to get the OSM way ID
+                if let Some(segment) = job.segment_map.borrow().get(&segment_id) {
+                    let mut distance = f64::MAX;
+                    // Find the actual distance from the point to the segment
+                    if point_idx < job.gps_points.len() {
+                        let point = job.gps_points[point_idx];
+                        let projection = self.project_point_to_segment(point, segment);
+                        distance = Haversine.distance(point, projection);
+                    }
+
+                    constraint_details.push(PointConstraint {
+                        point_idx,
+                        segment_id,
+                        way_id: segment.osm_way_id,
+                        distance,
+                    });
+                }
+            }
 
             // Find optimal path for this window, passing previous point constraints
-            let window_route = self.find_a_star_path_for_window(
+            // and indicating if this is the last window
+            let mut window_route = self.find_a_star_path_for_window(
                 job,
                 window_start,
                 window_end,
-                if complete_route.is_empty() {
-                    None
-                } else {
-                    complete_route.last()
-                },
                 &overlapping_points,
             )?;
 
+            // Track attempted way IDs during matching
+            let mut attempted_way_ids = HashSet::new();
+            for segment in &window_route {
+                attempted_way_ids.insert(segment.segment.osm_way_id);
+            }
+
+            // Calculate actual scores for constrained route
+            let constrained_score = if !window_route.is_empty() {
+                Some(self.calculate_comprehensive_score(
+                    &window_route,
+                    &job.gps_points[window_start..=window_end],
+                    &job.timestamps[window_start..=window_end],
+                    0.0,             // We don't have the raw path cost here
+                    &HashMap::new(), // No need for additional constraints
+                ))
+            } else {
+                None
+            };
+
             if window_route.is_empty() {
-                // Try to find a path without constraints if no valid path with constraints
-                info!("No valid path found with constraints. Attempting unconstrained matching...");
-                let unconstrained_route = self.find_a_star_path_for_window(
-                    job,
+                // Track this window for detailed debugging
+                failed_windows.push((
+                    window_index,
                     window_start,
                     window_end,
-                    if complete_route.is_empty() {
-                        None
-                    } else {
-                        complete_route.last()
-                    },
-                    &[],
-                )?;
+                    overlapping_points.clone(),
+                ));
 
-                if unconstrained_route.is_empty() {
-                    // Still no valid route, try a smaller window
-                    window_start += 1;
+                // Attempt window splitting before falling back to unconstrained
+                let current_window_size = window_end - window_start + 1;
+                if current_window_size > step_size && current_window_size > 4 {
+                    info!(
+                        "Splitting failed window {}-{} into smaller windows",
+                        window_start, window_end
+                    );
+
+                    // Calculate split point (halving the window)
+                    let mid_point = window_start + (current_window_size / 2);
+
+                    // Create new sub-windows
+                    let first_half = (window_start, mid_point);
+                    let second_half = (mid_point - 1, window_end);
+
+                    // Push new split windows in front
+                    windows.push_front(second_half);
+                    windows.push_front(first_half);
+
+                    if job.tracing {
+                        let mut window_traces = job.window_trace.borrow_mut();
+                        window_traces.push(WindowTrace::default());
+                    }
+
+                    // Skip further processing of the original failed window
+                    i -= 1;
                     continue;
+                }
+
+                // Try to find a path without constraints if no valid path with constraints
+                info!("No valid path found with constraints. Attempting unconstrained matching...");
+                let unconstrained_route =
+                    self.find_a_star_path_for_window(job, window_start, window_end, &[])?;
+
+                // Calculate unconstrained score
+                let unconstrained_score = if !unconstrained_route.is_empty() {
+                    Some(self.calculate_comprehensive_score(
+                        &unconstrained_route,
+                        &job.gps_points[window_start..=window_end],
+                        &job.timestamps[window_start..=window_end],
+                        0.0, // We don't have the raw path cost
+                        &HashMap::new(),
+                    ))
+                } else {
+                    None
+                };
+
+                // Perform detailed debugging for this failed window
+                if job.tracing {
+                    let debug_info = self.debug_constrained_window_failure(
+                        job,
+                        window_start,
+                        window_end,
+                        &overlapping_points,
+                    );
+                    debug_infos.push((window_index, debug_info.clone()));
+
+                    // Store debug information
+                    job.add_explanation(format!(
+                        "\nWindow {} (points {}-{}) failed with constraints: {}",
+                        window_index + 1,
+                        window_start,
+                        window_end,
+                        debug_info.reason
+                    ));
                 }
 
                 // Use unconstrained route when no constrained route is possible
@@ -762,7 +982,7 @@ impl RouteMatcher {
                         );
                         job.add_explanation(format!(
                             "Window {} had to ignore previous constraints to produce a valid route",
-                            window_index
+                            window_index + 1
                         ));
                     }
                 }
@@ -781,13 +1001,29 @@ impl RouteMatcher {
                     if let Some(idx) = overlap_segment_idx {
                         // We found where current window overlaps previous windows
                         if job.tracing {
-                            let window_traces = job.window_trace.get_mut();
-                            window_traces.push(WindowTrace {
+                            // Update the window trace at the current index
+                            let mut window_traces = job.window_trace.borrow_mut();
+                            window_traces[window_index] = WindowTrace {
                                 start: window_start,
                                 end: window_end,
                                 segments: unconstrained_route.clone(),
                                 bridge: true, // Mark as unconstrained bridge
-                            });
+                                constraints: constraint_details,
+                                used_constraints: false,
+                                constraint_score: constrained_score,
+                                unconstrained_score,
+                                attempted_way_ids: attempted_way_ids.into_iter().collect(),
+                                debug_notes: vec![
+                                    format!(
+                                        "Window {}: Fell back to unconstrained path due to failed constraints",
+                                        window_index + 1
+                                    ),
+                                    format!(
+                                        "Connecting to previous window at overlap point {}",
+                                        overlap_gps_idx
+                                    ),
+                                ],
+                            };
                         }
 
                         // Replace from overlap point onwards with new route
@@ -803,10 +1039,17 @@ impl RouteMatcher {
                             &job.gps_points,
                         );
 
-                        // Move window start ahead accounting for the replacement
-                        window_start += step_size;
                         continue;
                     }
+                }
+
+                if is_last_window {
+                    self.trim_last_window_route(
+                        job,
+                        &complete_route,
+                        &mut window_route,
+                        window_end,
+                    )?;
                 }
 
                 // If no overlap logic applied, just add non-overlapping segments
@@ -814,13 +1057,25 @@ impl RouteMatcher {
                     .new_matched_segments_for_route(&complete_route, unconstrained_route.clone());
 
                 if job.tracing {
-                    let window_traces = job.window_trace.get_mut();
-                    window_traces.push(WindowTrace {
+                    let mut window_traces = job.window_trace.borrow_mut();
+                    window_traces[window_index] = WindowTrace {
                         start: window_start,
                         end: window_end,
                         segments: new_segments.clone(),
-                        bridge: true,
-                    });
+                        bridge: false,
+                        constraints: constraint_details,
+                        used_constraints: true,
+                        constraint_score: constrained_score,
+                        unconstrained_score: None, // Didn't calculate unconstrained
+                        attempted_way_ids: attempted_way_ids.into_iter().collect(),
+                        debug_notes: vec![
+                            format!(
+                                "Window {}: Successfully matched with constraints",
+                                window_index + 1
+                            ),
+                            "No overlap with previous windows found".to_string(),
+                        ],
+                    };
                 }
 
                 complete_route.extend(new_segments.clone());
@@ -830,7 +1085,7 @@ impl RouteMatcher {
                     &mut previous_point_segments,
                     window_start,
                     window_end,
-                    &unconstrained_route,
+                    &window_route,
                     &job.gps_points,
                 );
             } else {
@@ -862,13 +1117,28 @@ impl RouteMatcher {
                     if let Some(idx) = overlap_segment_idx {
                         // We found where current window overlaps previous windows
                         if job.tracing {
-                            let window_traces = job.window_trace.get_mut();
-                            window_traces.push(WindowTrace {
+                            let mut window_traces = job.window_trace.borrow_mut();
+                            window_traces[window_index] = WindowTrace {
                                 start: window_start,
                                 end: window_end,
                                 segments: window_route.clone(),
                                 bridge: false,
-                            });
+                                constraints: constraint_details,
+                                used_constraints: true,
+                                constraint_score: constrained_score,
+                                unconstrained_score: None, // Didn't calculate unconstrained
+                                attempted_way_ids: attempted_way_ids.into_iter().collect(),
+                                debug_notes: vec![
+                                    format!(
+                                        "Window {}: Successfully matched with constraints",
+                                        window_index + 1
+                                    ),
+                                    format!(
+                                        "Connecting to previous window at overlap point {}",
+                                        overlap_gps_idx
+                                    ),
+                                ],
+                            };
                         }
 
                         // Replace from overlap point onwards with new route
@@ -884,10 +1154,17 @@ impl RouteMatcher {
                             &job.gps_points,
                         );
 
-                        // Move window start ahead accounting for the replacement
-                        window_start += step_size;
                         continue;
                     }
+                }
+
+                if is_last_window {
+                    self.trim_last_window_route(
+                        job,
+                        &complete_route,
+                        &mut window_route,
+                        window_end,
+                    )?;
                 }
 
                 // If no replacement happened, just add non-overlapping segments
@@ -895,13 +1172,25 @@ impl RouteMatcher {
                     self.new_matched_segments_for_route(&complete_route, window_route.clone());
 
                 if job.tracing {
-                    let window_traces = job.window_trace.get_mut();
-                    window_traces.push(WindowTrace {
+                    let mut window_traces = job.window_trace.borrow_mut();
+                    window_traces[window_index] = WindowTrace {
                         start: window_start,
                         end: window_end,
                         segments: new_segments.clone(),
                         bridge: false,
-                    });
+                        constraints: constraint_details,
+                        used_constraints: true,
+                        constraint_score: constrained_score,
+                        unconstrained_score: None, // Didn't calculate unconstrained
+                        attempted_way_ids: attempted_way_ids.into_iter().collect(),
+                        debug_notes: vec![
+                            format!(
+                                "Window {}: Successfully matched with constraints",
+                                window_index + 1
+                            ),
+                            "No overlap with previous windows found".to_string(),
+                        ],
+                    };
                 }
 
                 complete_route.extend(new_segments.clone());
@@ -915,9 +1204,129 @@ impl RouteMatcher {
                     &job.gps_points,
                 );
             }
+        }
 
-            // Move window forward
-            window_start += step_size;
+        // After processing all windows, create a comprehensive debug report for failed windows
+        if !failed_windows.is_empty() && job.tracing {
+            job.add_explanation("\n==== DETAILED PATH FINDING FAILURE ANALYSIS ====".to_string());
+
+            // Sort failed windows by index
+            failed_windows.sort_by_key(|(idx, _, _, _)| *idx);
+
+            for (window_idx, window_start, window_end, constraints) in &failed_windows {
+                // Find the matching debug info
+                if let Some((_, debug_info)) = debug_infos.iter().find(|(idx, _)| idx == window_idx)
+                {
+                    job.add_explanation(format!(
+                        "\nWindow #{} (Points {}-{}): {}",
+                        window_idx + 1,
+                        window_start,
+                        window_end,
+                        debug_info.reason
+                    ));
+
+                    // Report constraint details
+                    if !constraints.is_empty() {
+                        job.add_explanation("Constraint points:".to_string());
+                        for &(point_idx, segment_id) in constraints {
+                            let segment_map = job.segment_map.borrow();
+                            if let Some(segment) = segment_map.get(&segment_id) {
+                                job.add_explanation(format!(
+                                    "  Point {} → Segment {} (OSM way {})",
+                                    point_idx, segment_id, segment.osm_way_id
+                                ));
+                            }
+                        }
+                    }
+
+                    // Report on start/end candidates
+                    job.add_explanation(format!(
+                        "Start point {} has {} candidates",
+                        window_start,
+                        debug_info.start_candidates.len()
+                    ));
+                    job.add_explanation(format!(
+                        "End point {} has {} candidates",
+                        window_end,
+                        debug_info.end_candidates.len()
+                    ));
+
+                    // Report on path attempts
+                    let success_count = debug_info
+                        .attempted_pairs
+                        .iter()
+                        .filter(|a| matches!(a.result, PathfindingResult::Success(_, _)))
+                        .count();
+
+                    let too_far_count = debug_info
+                        .attempted_pairs
+                        .iter()
+                        .filter(|a| matches!(a.result, PathfindingResult::TooFar(_, _)))
+                        .count();
+
+                    let no_conn_count = debug_info
+                        .attempted_pairs
+                        .iter()
+                        .filter(|a| matches!(a.result, PathfindingResult::NoConnection))
+                        .count();
+
+                    job.add_explanation(format!(
+                        "Pathfinding attempts: {} total ({} successful, {} too far, {} no connection)",
+                        debug_info.attempted_pairs.len(),
+                        success_count,
+                        too_far_count,
+                        no_conn_count
+                    ));
+
+                    // List a few successful paths if available (for debugging why they weren't used)
+                    let successful_paths: Vec<_> = debug_info
+                        .attempted_pairs
+                        .iter()
+                        .filter(|a| matches!(a.result, PathfindingResult::Success(_, _)))
+                        .collect();
+
+                    if !successful_paths.is_empty() {
+                        job.add_explanation(
+                            "Example successful paths that couldn't be used:".to_string(),
+                        );
+                        for (i, path) in successful_paths.iter().take(2).enumerate() {
+                            if let PathfindingResult::Success(segments, cost) = &path.result {
+                                job.add_explanation(format!(
+                                    "  Path #{}: {} segments, cost: {:.2}",
+                                    i + 1,
+                                    segments.len(),
+                                    cost
+                                ));
+
+                                // List the way IDs in this path
+                                let way_sequence: Vec<_> =
+                                    segments.iter().map(|s| s.osm_way_id).collect();
+
+                                job.add_explanation(format!(
+                                    "    Way sequence: {:?}",
+                                    way_sequence
+                                ));
+
+                                // Check for any issues with these segments vs constraints
+                                for &(point_idx, segment_id) in constraints {
+                                    let segment_map = job.segment_map.borrow();
+                                    if let Some(constraint_segment) = segment_map.get(&segment_id) {
+                                        let constraint_way_id = constraint_segment.osm_way_id;
+
+                                        // Check if this way ID appears in the path
+                                        if !way_sequence.contains(&constraint_way_id) {
+                                            job.add_explanation(format!(
+                                                "    Missing constraint: Way {} for point {}",
+                                                constraint_way_id, point_idx
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         if complete_route.is_empty() {
@@ -925,6 +1334,209 @@ impl RouteMatcher {
         }
 
         Ok(complete_route)
+    }
+
+    /// Special method to try to match just the last point when regular matching fails
+    fn trim_last_window_route(
+        &self,
+        job: &RouteMatchJob,
+        complete_route: &[MatchedWaySegment],
+        window_route: &mut [MatchedWaySegment],
+        last_point_idx: usize,
+    ) -> Result<Vec<MatchedWaySegment>> {
+        // Get all candidate segments for the last point
+        let last_point = job.gps_points[last_point_idx];
+        let last_point_candidates = &job.all_candidates.borrow()[last_point_idx];
+
+        if last_point_candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Find the nearest node to the last point
+        let segments: Vec<WaySegment> = last_point_candidates
+            .iter()
+            .map(|candidate| candidate.segment.clone())
+            .collect();
+
+        if let Some((node_id, node_point, distance)) =
+            self.find_nearest_node_to_point(last_point, &segments)
+        {
+            debug!(
+                "Last point special matching: found node {} at distance {:.2}m",
+                node_id, distance
+            );
+
+            let previous_segment = complete_route.last();
+
+            // First, check if we have a previous segment to connect from
+            if let Some(prev) = previous_segment {
+                // Strategy 1: Check if the previous segment is already connected to a segment containing our node
+                let mut direct_connecting_segments = Vec::new();
+
+                for candidate in last_point_candidates {
+                    if candidate.segment.nodes.contains(&node_id)
+                        && prev.segment.connections.contains(&candidate.segment.id)
+                    {
+                        // This is an ideal segment - it contains our target node AND is directly connected to previous segment
+
+                        // Create a matched segment that ends at this node
+                        let mut matched =
+                            MatchedWaySegment::from_full_segment(candidate.segment.clone());
+
+                        // Find the index of this node in the segment
+                        if let Some(node_idx) =
+                            matched.segment.nodes.iter().position(|&n| n == node_id)
+                        {
+                            // We want to ensure the segment goes FROM the connection point TO the node
+                            if let Some(common_node) =
+                                self.find_connection_node(&prev.segment, &matched.segment)
+                            {
+                                // Find the index of the connection node
+                                if let Some(connection_idx) =
+                                    matched.segment.nodes.iter().position(|&n| n == common_node)
+                                {
+                                    // Set start to the connection point and end to our target node
+                                    matched.interim_start_idx = Some(connection_idx);
+                                    matched.interim_end_idx = Some(node_idx);
+                                    direct_connecting_segments.push(matched);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // If we found any direct connections, prioritize them
+                if !direct_connecting_segments.is_empty() {
+                    info!(
+                        "Found {} segments that directly connect from previous segment to target node",
+                        direct_connecting_segments.len()
+                    );
+
+                    // Sort by road type preference
+                    direct_connecting_segments.sort_by(|a, b| {
+                        let a_score = self.get_road_type_score(&a.segment.highway_type);
+                        let b_score = self.get_road_type_score(&b.segment.highway_type);
+                        a_score
+                            .partial_cmp(&b_score)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+
+                    return Ok(vec![direct_connecting_segments[0].clone()]);
+                }
+            }
+
+            // Fallback: create segments for all candidates that contain the node
+            let mut matching_segments = Vec::new();
+
+            for candidate in last_point_candidates {
+                if candidate.segment.nodes.contains(&node_id) {
+                    // Create a matched segment that ends at this node
+                    let mut matched =
+                        MatchedWaySegment::from_full_segment(candidate.segment.clone());
+
+                    // Find the index of this node in the segment
+                    if let Some(node_idx) = matched.segment.nodes.iter().position(|&n| n == node_id)
+                    {
+                        // Set appropriate start/end indices to ensure we go TO the node
+                        if node_idx == 0 {
+                            // It's the first node
+                            matched.interim_start_idx = Some(0);
+                            matched.interim_end_idx = Some(0);
+                        } else if node_idx == matched.segment.nodes.len() - 1 {
+                            // It's the last node
+                            matched.interim_start_idx = Some(0);
+                            matched.interim_end_idx = Some(matched.segment.nodes.len() - 1);
+                        } else {
+                            // It's an intermediate node - take shortest path
+                            if node_idx < matched.segment.nodes.len() / 2 {
+                                matched.interim_start_idx = Some(0);
+                                matched.interim_end_idx = Some(node_idx);
+                            } else {
+                                matched.interim_start_idx = Some(matched.segment.nodes.len() - 1);
+                                matched.interim_end_idx = Some(node_idx);
+                            }
+                        }
+
+                        matching_segments.push(matched);
+                    }
+                }
+            }
+
+            // If we found segments that contain the node
+            if !matching_segments.is_empty() {
+                // Sort by road type preference
+                matching_segments.sort_by(|a, b| {
+                    let a_score = self.get_road_type_score(&a.segment.highway_type);
+                    let b_score = self.get_road_type_score(&b.segment.highway_type);
+                    a_score
+                        .partial_cmp(&b_score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+
+                // If we have a previous segment, prefer connected segments
+                if let Some(prev) = previous_segment {
+                    // Try to find a segment that's connected to the previous segment
+                    for matched in &matching_segments {
+                        if prev.segment.connections.contains(&matched.segment.id) {
+                            return Ok(vec![matched.clone()]);
+                        }
+                    }
+                }
+
+                // Just take the best segment
+                return Ok(vec![matching_segments[0].clone()]);
+            }
+        }
+
+        // Fallback: just use the best candidate with standard projection to node
+        if !last_point_candidates.is_empty() {
+            let best_candidate = &last_point_candidates[0];
+            let mut matched = job.candidate_to_matched(best_candidate, best_candidate.projection);
+
+            // Try to find the closest node to this projection
+            let coords = matched.segment.coordinates.clone();
+            let nodes = matched.segment.nodes.clone();
+
+            let mut min_distance = f64::MAX;
+            let mut closest_node_idx = None;
+
+            for (i, &node_id) in nodes.iter().enumerate() {
+                if i < coords.len() {
+                    let coord = &coords[i];
+                    let node_point = Point::new(coord.x, coord.y);
+                    let distance = Haversine.distance(best_candidate.projection, node_point);
+
+                    if distance < min_distance {
+                        min_distance = distance;
+                        closest_node_idx = Some(i);
+                    }
+                }
+            }
+
+            // Set the end index to this node
+            if let Some(idx) = closest_node_idx {
+                matched.interim_end_idx = Some(idx);
+            }
+
+            return Ok(vec![matched]);
+        }
+
+        Ok(Vec::new())
+    }
+
+    /// Helper function to score road types (lower is better)
+    fn get_road_type_score(&self, highway_type: &str) -> f64 {
+        match highway_type {
+            "motorway" | "motorway_link" => 1.0,
+            "trunk" | "trunk_link" => 2.0,
+            "primary" | "primary_link" => 3.0,
+            "secondary" | "secondary_link" => 4.0,
+            "tertiary" | "tertiary_link" => 5.0,
+            "residential" => 6.0,
+            "unclassified" => 7.0,
+            "service" => 8.0,
+            _ => 9.0,
+        }
     }
 
     // Helper function to update the mapping between GPS points and their matched segments
@@ -1023,18 +1635,86 @@ impl RouteMatcher {
         }
     }
 
-    fn find_a_star_path_for_window(
+    /// Find the nearest node to a GPS point from a set of road segments
+    fn find_nearest_node_to_point(
         &self,
+        point: Point<f64>,
+        segments: &[WaySegment],
+    ) -> Option<(u64, Point<f64>, f64)> {
+        let mut nearest_node_id = None;
+        let mut nearest_node_point = None;
+        let mut min_distance = f64::MAX;
+
+        for segment in segments {
+            // Check both first and last nodes (endpoints) of the segment
+            if !segment.nodes.is_empty() {
+                // Get coordinates for the first node
+                let first_node_id = segment.nodes.first().unwrap();
+                let first_coord = segment.coordinates.first().unwrap();
+                let first_point = Point::new(first_coord.x, first_coord.y);
+                let first_distance = Haversine.distance(point, first_point);
+
+                if first_distance < min_distance {
+                    min_distance = first_distance;
+                    nearest_node_id = Some(*first_node_id);
+                    nearest_node_point = Some(first_point);
+                }
+
+                // Get coordinates for the last node
+                let last_node_id = segment.nodes.last().unwrap();
+                let last_coord = segment.coordinates.last().unwrap();
+                let last_point = Point::new(last_coord.x, last_coord.y);
+                let last_distance = Haversine.distance(point, last_point);
+
+                if last_distance < min_distance {
+                    min_distance = last_distance;
+                    nearest_node_id = Some(*last_node_id);
+                    nearest_node_point = Some(last_point);
+                }
+
+                // Also consider intermediate nodes if we want to be thorough
+                for (i, node_id) in segment
+                    .nodes
+                    .iter()
+                    .enumerate()
+                    .skip(1)
+                    .take(segment.nodes.len() - 2)
+                {
+                    if i < segment.coordinates.len() {
+                        let coord = &segment.coordinates[i];
+                        let node_point = Point::new(coord.x, coord.y);
+                        let distance = Haversine.distance(point, node_point);
+
+                        if distance < min_distance {
+                            min_distance = distance;
+                            nearest_node_id = Some(*node_id);
+                            nearest_node_point = Some(node_point);
+                        }
+                    }
+                }
+            }
+        }
+
+        if let (Some(id), Some(point)) = (nearest_node_id, nearest_node_point) {
+            Some((id, point, min_distance))
+        } else {
+            None
+        }
+    }
+
+    fn find_a_star_path_for_window(
+        &mut self,
         job: &RouteMatchJob,
-        start_idx: usize,
-        end_idx: usize,
-        previous_segment: Option<&MatchedWaySegment>,
+        window_start: usize,
+        window_end: usize,
         constraints: &[(usize, u64)],
     ) -> Result<Vec<MatchedWaySegment>> {
+        // Existing implementation remains the same until path finding failure
+
         // Get window data
-        let window_points = &job.gps_points[start_idx..=end_idx];
-        let window_timestamps = &job.timestamps[start_idx..=end_idx];
-        let window_candidates = &job.all_candidates.borrow()[start_idx..=end_idx];
+        let window_points = &job.gps_points[window_start..=window_end];
+        let window_timestamps = &job.timestamps[window_start..=window_end];
+        let window_candidates = &job.all_candidates.borrow()[window_start..=window_end];
 
         // Validation
         if window_points.is_empty() || window_candidates.is_empty() {
@@ -1042,7 +1722,7 @@ impl RouteMatcher {
         }
 
         // Create a map from point index in the original array to its relative position in the window
-        let point_idx_map: HashMap<usize, usize> = (start_idx..=end_idx)
+        let point_idx_map: HashMap<usize, usize> = (window_start..=window_end)
             .enumerate()
             .map(|(window_pos, original_idx)| (original_idx, window_pos))
             .collect();
@@ -1051,7 +1731,7 @@ impl RouteMatcher {
         let mut constrained_candidates: HashMap<usize, Vec<&SegmentCandidate>> = HashMap::new();
 
         for &(point_idx, segment_id) in constraints {
-            if point_idx < start_idx || point_idx > end_idx {
+            if point_idx < window_start || point_idx > window_end {
                 continue; // Skip constraints outside our window
             }
 
@@ -1074,15 +1754,15 @@ impl RouteMatcher {
 
         // If we have constraints but none could be matched, it's a sign the window doesn't align well
         if !constraints.is_empty() && constrained_candidates.is_empty() {
-            info!(
+            warn!(
                 "None of the {} constraints could be matched in this window",
                 constraints.len()
             );
             return Ok(Vec::new()); // Signal that we need to use the unconstrained version
         }
 
-        // Get first and last candidates based on constraints
-        let first_candidates = if let Some(window_pos) = point_idx_map.get(&start_idx) {
+        // Get first candidates based on constraints
+        let first_candidates = if let Some(window_pos) = point_idx_map.get(&window_start) {
             if let Some(constrained) = constrained_candidates.get(window_pos) {
                 constrained.iter().map(|&c| c.clone()).collect::<Vec<_>>()
             } else {
@@ -1092,14 +1772,18 @@ impl RouteMatcher {
             window_candidates[0].clone()
         };
 
-        let last_candidates = if let Some(window_pos) = point_idx_map.get(&end_idx) {
-            if let Some(constrained) = constrained_candidates.get(window_pos) {
-                constrained.iter().map(|&c| c.clone()).collect::<Vec<_>>()
+        // Get last candidates
+        let last_candidates = {
+            // Regular candidates or constrained candidates
+            if let Some(window_pos) = point_idx_map.get(&window_end) {
+                if let Some(constrained) = constrained_candidates.get(window_pos) {
+                    constrained.iter().map(|&c| c.clone()).collect::<Vec<_>>()
+                } else {
+                    window_candidates[window_candidates.len() - 1].clone()
+                }
             } else {
                 window_candidates[window_candidates.len() - 1].clone()
             }
-        } else {
-            window_candidates[window_candidates.len() - 1].clone()
         };
 
         if first_candidates.is_empty() || last_candidates.is_empty() {
@@ -1109,6 +1793,7 @@ impl RouteMatcher {
         // Track best route
         let mut best_route = Vec::new();
         let mut best_score = f64::MAX;
+        let mut attempted_way_ids = HashSet::new();
 
         // Find paths, honoring constraints
         for first_candidate in &first_candidates {
@@ -1120,6 +1805,10 @@ impl RouteMatcher {
                     continue;
                 }
 
+                // Track attempted way IDs for debugging
+                attempted_way_ids.insert(first_candidate.segment.osm_way_id);
+                attempted_way_ids.insert(last_candidate.segment.osm_way_id);
+
                 // Find path between candidates using simplified metrics
                 match self.find_simple_path(
                     job,
@@ -1128,6 +1817,11 @@ impl RouteMatcher {
                     Self::max_route_length_from_points(window_points, window_timestamps),
                 ) {
                     Ok((path, path_cost)) => {
+                        // Add all way IDs from path to attempted ways
+                        for segment in &path {
+                            attempted_way_ids.insert(segment.osm_way_id);
+                        }
+
                         // Convert to MatchedWaySegment with precise entry/exit points
                         let matched_path = self.convert_to_matched_segments(
                             path,
@@ -1135,50 +1829,18 @@ impl RouteMatcher {
                             last_candidate.projection,
                         );
 
-                        // Calculate score with bonus for matching constrained points
-                        let mut constraint_bonus = 0.0;
-
-                        // Check how well this path matches constrained points
-                        for (window_pos, constrained_candidates) in &constrained_candidates {
-                            let point_idx = start_idx + window_pos;
-                            if point_idx >= job.gps_points.len() {
-                                continue;
-                            }
-
-                            let constrained_segment_ids: HashSet<u64> = constrained_candidates
-                                .iter()
-                                .map(|c| c.segment.id)
-                                .collect();
-
-                            // Check if this path includes any of the constrained segments for this point
-                            let matched = matched_path.iter().any(|matched_segment| {
-                                constrained_segment_ids.contains(&matched_segment.segment.id)
-                            });
-
-                            if matched {
-                                // Significant bonus for matching a constrained point
-                                constraint_bonus -= 50.0;
-                            } else {
-                                // Significant penalty for failing to match a constrained point
-                                constraint_bonus += 100.0;
-                            }
-                        }
-
                         // Calculate comprehensive score using matched segments
-                        let basic_score = self.calculate_comprehensive_score(
+                        let score = self.calculate_comprehensive_score(
                             &matched_path,
                             window_points,
                             window_timestamps,
                             path_cost,
-                            previous_segment,
+                            &constrained_candidates,
                         );
 
-                        // Combined score with constraint bonus/penalty
-                        let adjusted_score = basic_score + constraint_bonus;
-
-                        if adjusted_score < best_score {
+                        if score < best_score {
                             best_route = matched_path;
-                            best_score = adjusted_score;
+                            best_score = score;
                         }
                     }
                     Err(_) => continue,
@@ -1186,10 +1848,114 @@ impl RouteMatcher {
             }
         }
 
-        // Check if the best route satisfies critical constraints
-        let route_validity = self.validate_route_for_window(&best_route, window_points);
+        if best_route.is_empty() {
+            return Ok(best_route);
+        }
 
-        if !route_validity && !constraints.is_empty() {
+        // Check if the best route satisfies critical constraints
+        let route_validity =
+            self.check_for_excessive_point_match_distance(&best_route, window_points);
+
+        if !route_validity.is_empty() && !constraints.is_empty() {
+            // Generate detailed debugging info when route not found
+            if job.tracing {
+                for (point_idx, distance) in route_validity {
+                    job.add_explanation(format!(
+                        "Segment for point {} is too far away: {} m",
+                        point_idx, distance
+                    ));
+                }
+
+                let debug_info = self.debug_constrained_window_failure(
+                    job,
+                    window_start,
+                    window_end,
+                    constraints,
+                );
+
+                // Add detailed explanation to the job
+                job.add_explanation(format!(
+                    "Window {}-{} failed to find valid route with constraints. Reason: {}",
+                    window_start, window_end, debug_info.reason
+                ));
+
+                // Log detailed information about attempted paths
+                let segment_map = job.segment_map.borrow();
+                for (i, attempt) in debug_info.attempted_pairs.iter().enumerate() {
+                    let from_seg = segment_map.get(&attempt.from_segment).map_or_else(
+                        || format!("Unknown ({})", attempt.from_segment),
+                        |s| format!("{} (OSM: {})", s.id, s.osm_way_id),
+                    );
+
+                    let to_seg = segment_map.get(&attempt.to_segment).map_or_else(
+                        || format!("Unknown ({})", attempt.to_segment),
+                        |s| format!("{} (OSM: {})", s.id, s.osm_way_id),
+                    );
+
+                    let result_str = match &attempt.result {
+                        PathfindingResult::Success(path, cost) => {
+                            format!("SUCCESS (cost: {:.2}, {} segments)", cost, path.len())
+                        }
+                        PathfindingResult::TooFar(max_dist, actual_dist) => format!(
+                            "TOO FAR (max: {:.2}m, actual: {:.2}m)",
+                            max_dist, actual_dist
+                        ),
+                        PathfindingResult::NoConnection => "NO CONNECTION".to_string(),
+                        PathfindingResult::NoPathFound(reason) => format!("FAILED: {}", reason),
+                    };
+
+                    job.add_explanation(format!(
+                        "Path attempt #{}: {} → {} ({:.2}m apart): {}",
+                        i + 1,
+                        from_seg,
+                        to_seg,
+                        attempt.distance,
+                        result_str
+                    ));
+                }
+
+                // Add information about each constraint
+                for &(point_idx, segment_id) in constraints {
+                    if let Some(segment) = segment_map.get(&segment_id) {
+                        let point = if point_idx < job.gps_points.len() {
+                            job.gps_points[point_idx]
+                        } else {
+                            continue;
+                        };
+
+                        // Calculate distance to constraint point
+                        let projection = self.project_point_to_segment(point, segment);
+                        let distance = Haversine.distance(point, projection);
+
+                        job.add_explanation(format!(
+                            "Constraint at point {}: Segment {} (OSM way {}), distance: {:.2}m",
+                            point_idx, segment_id, segment.osm_way_id, distance
+                        ));
+
+                        // Check if point has any candidates
+                        if point_idx >= window_start && point_idx <= window_end {
+                            let rel_idx = point_idx - window_start;
+                            if rel_idx < window_candidates.len() {
+                                let candidates = &window_candidates[rel_idx];
+                                job.add_explanation(format!(
+                                    "Point {} has {} segment candidates",
+                                    point_idx,
+                                    candidates.len()
+                                ));
+
+                                // Log top 3 candidates
+                                for (i, cand) in candidates.iter().take(3).enumerate() {
+                                    job.add_explanation(format!(
+                                        "  Top candidate #{}: Segment {} (OSM way {}), distance: {:.2}m",
+                                        i+1, cand.segment.id, cand.segment.osm_way_id, cand.distance
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // If we have constraints but couldn't find a valid route,
             // signal that we should try without constraints
             return Ok(Vec::new());
@@ -1205,9 +1971,13 @@ impl RouteMatcher {
         window_points: &[Point<f64>],
         window_timestamps: &[DateTime<Utc>],
         path_cost: f64,
-        previous_segment: Option<&MatchedWaySegment>,
+        constrained_candidates: &HashMap<usize, Vec<&SegmentCandidate>>,
     ) -> f64 {
-        if path.is_empty() || !self.validate_route_for_window(path, window_points) {
+        if path.is_empty()
+        // || !self
+        //     .check_for_excessive_point_match_distance(path, window_points)
+        //     .is_empty()
+        {
             return f64::MAX;
         }
 
@@ -1288,34 +2058,39 @@ impl RouteMatcher {
             }
         }
 
-        continuity_score = transitions as f64 * 5.0; // 5 points per transition
+        continuity_score = transitions as f64 * 1.0; // 5 points per transition
 
         // 5. Add connection penalty/bonus for connection to previous segment
-        let connection_score = if let Some(prev_segment) = previous_segment {
-            if path.is_empty() {
-                20.0 // Penalty for disconnected path
+        // Calculate score with bonus for matching constrained points
+        let mut constraint_score = 0.0;
+
+        // Check how well this path matches constrained points
+        for constrained_candidates in constrained_candidates.values() {
+            let constrained_segment_ids: HashSet<u64> = constrained_candidates
+                .iter()
+                .map(|c| c.segment.id)
+                .collect();
+
+            // Check if this path includes any of the constrained segments for this point
+            let matched = path.iter().any(|matched_segment| {
+                constrained_segment_ids.contains(&matched_segment.segment.id)
+            });
+
+            if matched {
+                // Significant bonus for matching a constrained point
+                constraint_score -= 50.0;
             } else {
-                let first_segment = &path[0];
-                if prev_segment
-                    .segment
-                    .connections
-                    .contains(&first_segment.segment.id)
-                {
-                    -10.0 // Bonus for connected path
-                } else {
-                    20.0 // Penalty for disconnected path
-                }
+                // Significant penalty for failing to match a constrained point
+                constraint_score += 100.0;
             }
-        } else {
-            0.0 // No penalty/bonus if no previous segment
-        };
+        }
 
         // Combine all scores with appropriate weights
         (distance_score * 1.0) +   // Weight for distance to GPS points
             (length_score * 0.2) +     // Weight for route length
             (road_class_score * 0.8) + // Weight for road class
             (continuity_score * 0.5) + // Weight for route continuity
-            connection_score
+            constraint_score
     }
 
     // Calculate road class score
@@ -1355,16 +2130,16 @@ impl RouteMatcher {
         score
     }
 
-    // Validate route with segments
-    fn validate_route_for_window(
+    // Check if route does not deviate from points too much
+    fn check_for_excessive_point_match_distance(
         &self,
         route: &[MatchedWaySegment],
         window_points: &[Point<f64>],
-    ) -> bool {
+    ) -> Vec<(usize, f64)> {
+        let mut distance_errors = Vec::new();
         // For each GPS point, check if it's within the maximum distance from any segment
-        for &point in window_points {
-            let mut min_distance = f64::MAX;
-
+        for (i, point) in window_points.iter().enumerate() {
+            let mut min_distance = f64::INFINITY;
             for matched_segment in route {
                 let coords = matched_segment.coordinates();
                 if coords.is_empty() {
@@ -1373,25 +2148,25 @@ impl RouteMatcher {
 
                 // Create a line string from the actual coordinates
                 let line = LineString::from(coords);
-                let closest = line.closest_point(&point);
+                let closest = line.closest_point(point);
 
                 let projection = match closest {
                     Closest::SinglePoint(p) => p,
-                    _ => point, // Fallback
+                    _ => *point, // Fallback
                 };
 
-                let distance = Haversine.distance(point, projection);
-                min_distance = min_distance.min(distance);
+                let distance = Haversine.distance(*point, projection);
+                if distance < min_distance {
+                    min_distance = distance;
+                }
             }
 
-            // If the closest segment is still further than our threshold, the route is invalid
-            if min_distance > 150.0 {
-                // 150m max distance
-                return false;
+            if min_distance > MAX_DISTANCE_BETWEEN_POINT_AND_MATCHED_SEGMENT_METER {
+                distance_errors.push((i, min_distance));
             }
         }
 
-        true // All points are within acceptable distance
+        distance_errors
     }
 
     /// Find path between segments with just distance and road class
@@ -1500,6 +2275,7 @@ impl RouteMatcher {
         let mut g_scores = HashMap::new();
         let mut came_from = HashMap::new();
         let mut total_distances = HashMap::new();
+        let mut entry_nodes = HashMap::new();
 
         // Get destination coordinates for heuristic
         let segment_map = job.segment_map.borrow();
@@ -1511,6 +2287,7 @@ impl RouteMatcher {
         // Initialize
         g_scores.insert(from, 0.0);
         total_distances.insert(from, 0.0);
+        entry_nodes.insert(from, None);
         open_set.push(OrderedFloat(0.0), from);
 
         while let Some((_, current)) = open_set.pop() {
@@ -1588,12 +2365,30 @@ impl RouteMatcher {
                     continue;
                 }
 
-                // Use improved edge cost calculation
-                let edge_cost = self.calculate_improved_edge_cost(
-                    current_segment,
-                    neighbor_segment,
-                    segment_length,
-                );
+                // Determine the entry node for the neighbor segment
+                let entry_node = match entry_nodes.get(&current) {
+                    Some(&Some(node)) => {
+                        // Find the common node for this transition
+                        let common_nodes: Vec<u64> = current_segment
+                            .nodes
+                            .iter()
+                            .filter(|&&n| neighbor_segment.nodes.contains(&n))
+                            .cloned()
+                            .collect();
+
+                        // Prefer the common node from the previous entry node if possible
+                        common_nodes
+                            .iter()
+                            .find(|&&n| n == node)
+                            .cloned()
+                            .or_else(|| common_nodes.first().cloned())
+                    }
+                    _ => None, // No entry node specified, start from the first node
+                };
+
+                // Edge cost calculation
+                let edge_cost =
+                    calculate_transition_cost(current_segment, neighbor_segment, entry_node);
 
                 let new_g_score = g_scores[&current] + edge_cost;
 
@@ -1603,6 +2398,9 @@ impl RouteMatcher {
                     came_from.insert(neighbor, current);
                     g_scores.insert(neighbor, new_g_score);
                     total_distances.insert(neighbor, new_total_distance);
+
+                    // Track the entry node for this neighbor
+                    entry_nodes.insert(neighbor, entry_node);
 
                     // Calculate heuristic
                     let neighbor_point = neighbor_segment.centroid();
@@ -1623,84 +2421,8 @@ impl RouteMatcher {
         ))
     }
 
-    /// Calculate improved edge cost for A* search, considering road type, length,
-    /// and connection characteristics
-    fn calculate_improved_edge_cost(
-        &self,
-        from_segment: &WaySegment,
-        to_segment: &WaySegment,
-        distance: f64,
-    ) -> f64 {
-        // Base cost is the distance
-        let mut cost = distance;
-
-        // 1. Apply road class factor - prefer higher class roads
-        let road_class_factor = match to_segment.highway_type.as_str() {
-            "motorway" => 0.4, // Strongly prefer motorways
-            "motorway_link" => 0.5,
-            "trunk" => 0.6,
-            "trunk_link" => 0.7,
-            "primary" => 0.8,
-            "primary_link" => 0.9,
-            "secondary" => 1.1,
-            "secondary_link" => 1.2,
-            "tertiary" => 1.4,
-            "tertiary_link" => 1.5,
-            "residential" => 1.8, // Penalize smaller roads
-            "unclassified" => 2.2,
-            "service" => 2.5,
-            _ => 3.0,
-        };
-
-        cost *= road_class_factor;
-
-        // 2. Apply continuity bonus - prefer staying on the same road
-        if from_segment.osm_way_id == to_segment.osm_way_id {
-            cost *= 0.8; // 20% discount for staying on the same road
-        }
-
-        // 3. Apply road name continuity bonus (if roads have the same name)
-        if let (Some(from_name), Some(to_name)) = (&from_segment.name, &to_segment.name) {
-            if !from_name.is_empty() && from_name == to_name {
-                cost *= 0.9; // 10% discount for roads with the same name
-            }
-        }
-
-        // 4. Apply angle penalty for sharp turns
-        let from_end = from_segment.coordinates.last().unwrap();
-        let from_before_end =
-            from_segment.coordinates[from_segment.coordinates.len().saturating_sub(2)];
-        let to_start = to_segment.coordinates.first().unwrap();
-        let to_after_start = to_segment.coordinates.get(1).unwrap_or(to_start);
-
-        // Calculate vectors
-        let from_vec = (
-            from_end.x - from_before_end.x,
-            from_end.y - from_before_end.y,
-        );
-        let to_vec = (to_after_start.x - to_start.x, to_after_start.y - to_start.y);
-
-        // Calculate angle using dot product
-        let dot_product = from_vec.0 * to_vec.0 + from_vec.1 * to_vec.1;
-        let from_mag = (from_vec.0.powi(2) + from_vec.1.powi(2)).sqrt();
-        let to_mag = (to_vec.0.powi(2) + to_vec.1.powi(2)).sqrt();
-
-        if from_mag > 0.0 && to_mag > 0.0 {
-            let cos_angle = (dot_product / (from_mag * to_mag)).clamp(-1.0, 1.0);
-            let angle = cos_angle.acos().to_degrees();
-
-            // Penalize sharp turns (angles close to 90° or greater)
-            if angle > 120.0 {
-                let turn_penalty = 1.0 + (angle - 120.0) / 120.0; // Penalty increases with angle
-                cost *= turn_penalty;
-            }
-        }
-
-        cost
-    }
-
     /// Build road network graph for path finding
-    fn build_road_network(
+    pub(crate) fn build_road_network(
         &mut self,
         loaded_tiles: &HashSet<String>,
     ) -> Result<(UnGraphMap<u64, f64>, HashMap<u64, WaySegment>)> {
@@ -1735,7 +2457,18 @@ impl RouteMatcher {
                 if !graph.contains_edge(segment.id, conn_id) {
                     // Calculate transition cost
                     let cost = if let Some(conn_segment) = segment_map.get(&conn_id) {
-                        calculate_transition_cost(segment, conn_segment)
+                        // Find a common node for entry
+                        let common_nodes: Vec<u64> = segment
+                            .nodes
+                            .iter()
+                            .filter(|&&n| conn_segment.nodes.contains(&n))
+                            .cloned()
+                            .collect();
+
+                        // Use the first common node or None if no common node
+                        let entry_node = common_nodes.first().cloned();
+
+                        calculate_transition_cost(segment, conn_segment, entry_node)
                     } else {
                         // Default cost
                         1.0
@@ -1779,9 +2512,13 @@ impl RouteMatcher {
                                 == node_id
                                 || *other_segment.nodes.last().unwrap() == node_id;
 
+                            // Prepare for entry node calculation
+                            let entry_node = Some(node_id);
+
                             // Case 1: Both segments have this node as an endpoint (standard case)
                             if is_segment_endpoint && is_other_endpoint {
-                                let cost = calculate_transition_cost(segment, other_segment);
+                                let cost =
+                                    calculate_transition_cost(segment, other_segment, entry_node);
                                 graph.add_edge(segment_id, other_segment_id, cost);
                                 added_endpoint_connections += 1;
                                 continue;
@@ -1791,7 +2528,8 @@ impl RouteMatcher {
                             if is_segment_endpoint || is_other_endpoint {
                                 // For cases where a road endpoint meets another road at an intersection
                                 // This is a legitimate connection - create a path from endpoint to midpoint
-                                let cost = calculate_transition_cost(segment, other_segment) * 1.2;
+                                let cost =
+                                    calculate_transition_cost(segment, other_segment, entry_node);
                                 graph.add_edge(segment_id, other_segment_id, cost);
                                 added_intermediate_connections += 1;
                                 continue;
@@ -1804,7 +2542,8 @@ impl RouteMatcher {
                             // First check if these segments are from the same OSM way
                             // In that case, they definitely should connect
                             if segment.osm_way_id == other_segment.osm_way_id {
-                                let cost = calculate_transition_cost(segment, other_segment);
+                                let cost =
+                                    calculate_transition_cost(segment, other_segment, entry_node);
                                 graph.add_edge(segment_id, other_segment_id, cost);
                                 added_intermediate_connections += 1;
                                 continue;
@@ -1843,7 +2582,9 @@ impl RouteMatcher {
 
                             if should_connect {
                                 // Higher cost for this less certain connection
-                                let cost = calculate_transition_cost(segment, other_segment) * 1.5;
+                                let cost =
+                                    calculate_transition_cost(segment, other_segment, entry_node)
+                                        * 1.5;
                                 graph.add_edge(segment_id, other_segment_id, cost);
                                 added_intermediate_connections += 1;
                             }
@@ -2678,8 +3419,41 @@ impl RouteMatcher {
         }
 
         // Special case for single-segment path
-        if path.len() == 1 {
-            // Similar to existing code...
+        if path.len() == 1 && matched_path.is_empty() {
+            let segment = &path[0];
+            let mut matched = MatchedWaySegment::from_full_segment(segment.clone());
+
+            // Handle entry point
+            let mut min_distance = f64::MAX;
+            let mut closest_start_idx = 0;
+
+            for (i, coord) in segment.coordinates.iter().enumerate() {
+                let point = Point::new(coord.x, coord.y);
+                let distance = Haversine.distance(point, first_projection);
+
+                if distance < min_distance {
+                    min_distance = distance;
+                    closest_start_idx = i;
+                }
+            }
+
+            matched.interim_start_idx = Some(closest_start_idx);
+
+            let mut min_distance = f64::MAX;
+            let mut closest_end_idx = 0;
+
+            for (i, coord) in segment.coordinates.iter().enumerate() {
+                let point = Point::new(coord.x, coord.y);
+                let distance = Haversine.distance(point, last_projection);
+
+                if distance < min_distance {
+                    min_distance = distance;
+                    closest_end_idx = i;
+                }
+            }
+
+            matched.interim_end_idx = Some(closest_end_idx);
+            matched_path.push(matched);
         }
 
         matched_path
@@ -2697,8 +3471,8 @@ impl RouteMatcher {
 
         if !shared_nodes.is_empty() {
             // Prefer endpoints of segments if possible
-            let segment1_endpoints = vec![*segment1.nodes.first()?, *segment1.nodes.last()?];
-            let segment2_endpoints = vec![*segment2.nodes.first()?, *segment2.nodes.last()?];
+            let segment1_endpoints = [*segment1.nodes.first()?, *segment1.nodes.last()?];
+            let segment2_endpoints = [*segment2.nodes.first()?, *segment2.nodes.last()?];
 
             // Check for shared endpoint nodes first (preferred)
             for &node in &shared_nodes {
@@ -2723,336 +3497,6 @@ impl RouteMatcher {
         }
 
         None
-    }
-
-    /// Debug a specific route between two GPS points using a required sequence of OSM way IDs
-    ///
-    /// This function helps diagnose why a specific sequence of OSM way IDs might not be matched
-    /// between two GPS points. It performs a detailed analysis of the connectivity and routing
-    /// issues that might prevent the exact sequence from being matched.
-    ///
-    /// # Arguments
-    ///
-    /// * `start_point` - The starting GPS point (lon, lat)
-    /// * `end_point` - The ending GPS point (lon, lat)
-    /// * `way_ids` - The exact sequence of OSM way IDs that should be matched
-    ///
-    /// # Returns
-    ///
-    /// A detailed diagnostic report explaining why the route cannot be matched as described,
-    /// or confirming that it can be matched.
-    pub fn debug_specific_route(
-        &mut self,
-        start_point: (f64, f64),
-        end_point: (f64, f64),
-        way_ids: Vec<u64>,
-    ) -> Result<String> {
-        info!(
-            "Debugging specific route between ({}, {}) and ({}, {}) with way IDs: {:?}",
-            start_point.0, start_point.1, end_point.0, end_point.1, way_ids
-        );
-
-        if way_ids.is_empty() {
-            return Err(anyhow!("No way IDs provided for debugging"));
-        }
-
-        // Create report structure
-        let mut report = DebugReport {
-            start_point: geo::Point::new(start_point.0, start_point.1),
-            end_point: geo::Point::new(end_point.0, end_point.1),
-            way_ids: way_ids.clone(),
-            way_segments: HashMap::new(),
-            ways_not_found: Vec::new(),
-            way_candidates: HashMap::new(),
-            segment_connections: HashMap::new(),
-            path_analysis: Vec::new(),
-            summary: String::new(),
-        };
-
-        // Step 1: Load all tiles covering the area between the points with a buffer
-        let mut bbox = geo::Rect::new(
-            geo::Coord {
-                x: start_point.0.min(end_point.0),
-                y: start_point.1.min(end_point.1),
-            },
-            geo::Coord {
-                x: start_point.0.max(end_point.0),
-                y: start_point.1.max(end_point.1),
-            },
-        );
-
-        // Add buffer around the bbox (2km converted to approximate degrees)
-        let buffer = 0.02; // Roughly 2km at the equator
-        bbox = geo::Rect::new(
-            geo::Coord {
-                x: bbox.min().x - buffer,
-                y: bbox.min().y - buffer,
-            },
-            geo::Coord {
-                x: bbox.max().x + buffer,
-                y: bbox.max().y + buffer,
-            },
-        );
-
-        let loaded_tiles =
-            self.tile_loader
-                .load_tile_range(bbox, buffer, self.config.max_tiles_per_depth)?;
-
-        info!("Loaded {} tiles for debugging", loaded_tiles.len());
-
-        // Step 2: Find all segments for each way ID
-        let mut missing_ways = false;
-        for &way_id in &way_ids {
-            match self.find_segments_by_osm_way_id(way_id) {
-                Ok(segments) => {
-                    if segments.is_empty() {
-                        report.ways_not_found.push(way_id);
-                        missing_ways = true;
-                    } else {
-                        report.way_segments.insert(way_id, segments);
-                    }
-                }
-                Err(_) => {
-                    report.ways_not_found.push(way_id);
-                    missing_ways = true;
-                }
-            }
-        }
-
-        if missing_ways {
-            report.summary = format!(
-                "Could not match the route because the following OSM ways were not found: {:?}",
-                report.ways_not_found
-            );
-            return Ok(report.generate());
-        }
-
-        // Step 3: Check connectivity between consecutive ways
-        let mut connectivity_issues = false;
-        for i in 0..way_ids.len() - 1 {
-            let way1 = way_ids[i];
-            let way2 = way_ids[i + 1];
-
-            let segments1 = &report.way_segments[&way1];
-            let segments2 = &report.way_segments[&way2];
-
-            let mut connection_found = false;
-            let mut closest_distance = f64::MAX;
-            let mut closest_segment_pair = ((0, 0), (0, 0), 0.0); // ((seg1_idx, osm_id1), (seg2_idx, osm_id2), distance)
-
-            // Check if any segment from way1 connects to any segment from way2
-            for (s1_idx, (segment1, _)) in segments1.iter().enumerate() {
-                report.segment_connections.insert(segment1.id, Vec::new());
-
-                for (s2_idx, (segment2, _)) in segments2.iter().enumerate() {
-                    // Check if directly connected
-                    let direct_connection = segment1.connections.contains(&segment2.id)
-                        || segment2.connections.contains(&segment1.id);
-
-                    if direct_connection {
-                        connection_found = true;
-                        report
-                            .segment_connections
-                            .get_mut(&segment1.id)
-                            .unwrap()
-                            .push(segment2.id);
-                    }
-
-                    // Calculate the distance between segments for diagnostic purposes
-                    let s1_centroid = segment1.centroid();
-                    let s2_centroid = segment2.centroid();
-                    let distance = Haversine.distance(s1_centroid, s2_centroid);
-
-                    if distance < closest_distance {
-                        closest_distance = distance;
-                        closest_segment_pair =
-                            ((s1_idx, segment1.id), (s2_idx, segment2.id), distance);
-                    }
-                }
-            }
-
-            // Record the connectivity analysis
-            if !connection_found {
-                connectivity_issues = true;
-                report.path_analysis.push(PathSegmentAnalysis {
-                    segment_idx: i,
-                    way_id1: way1,
-                    way_id2: way2,
-                    connected: false,
-                    reason: format!(
-                        "No connection found between OSM ways {} and {}. Closest segments are {} and {} at {:.2}m apart.",
-                        way1, way2, closest_segment_pair.0.1, closest_segment_pair.1.1, closest_segment_pair.2
-                    ),
-                    details: self.analyze_connectivity_failure(
-                        &report.way_segments[&way1][closest_segment_pair.0.0].0,
-                        &report.way_segments[&way2][closest_segment_pair.1.0].0
-                    )
-                });
-            } else {
-                report.path_analysis.push(PathSegmentAnalysis {
-                    segment_idx: i,
-                    way_id1: way1,
-                    way_id2: way2,
-                    connected: true,
-                    reason: format!("OSM ways {} and {} are connected", way1, way2),
-                    details: Vec::new(),
-                });
-            }
-        }
-
-        if connectivity_issues {
-            report.summary =
-                "Could not match the route due to connectivity issues between OSM ways."
-                    .to_string();
-            return Ok(report.generate());
-        }
-
-        // Step 4: Verify coverage of the route at start and end points
-        let start_point_geo = geo::Point::new(start_point.0, start_point.1);
-        let end_point_geo = geo::Point::new(end_point.0, end_point.1);
-
-        let mut start_coverage_ok = false;
-        let mut end_coverage_ok = false;
-        let mut start_distances = Vec::new();
-        let mut end_distances = Vec::new();
-
-        // Check start point proximity to first way
-        let first_way_segments = &report.way_segments[&way_ids[0]];
-        for (segment, _) in first_way_segments {
-            let distance = self.project_point_to_segment_distance(start_point_geo, segment);
-            start_distances.push((segment.id, distance));
-
-            if distance <= self.config.max_matching_distance {
-                start_coverage_ok = true;
-            }
-        }
-
-        // Check end point proximity to last way
-        let last_way_segments = &report.way_segments[&way_ids[way_ids.len() - 1]];
-        for (segment, _) in last_way_segments {
-            let distance = self.project_point_to_segment_distance(end_point_geo, segment);
-            end_distances.push((segment.id, distance));
-
-            if distance <= self.config.max_matching_distance {
-                end_coverage_ok = true;
-            }
-        }
-
-        // Update report with coverage issues
-        if !start_coverage_ok {
-            start_distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
-            let closest = start_distances.first().unwrap_or(&(0, f64::MAX));
-
-            report.summary = format!(
-                "Start point is too far ({:.2}m) from the first way ID {}. Maximum allowed distance is {:.2}m.",
-                closest.1, way_ids[0], self.config.max_matching_distance
-            );
-            return Ok(report.generate());
-        }
-
-        if !end_coverage_ok {
-            end_distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
-            let closest = end_distances.first().unwrap_or(&(0, f64::MAX));
-
-            report.summary = format!(
-                "End point is too far ({:.2}m) from the last way ID {}. Maximum allowed distance is {:.2}m.",
-                closest.1,
-                way_ids[way_ids.len() - 1],
-                self.config.max_matching_distance
-            );
-            return Ok(report.generate());
-        }
-
-        // Step 5: Try to find a complete path through all segments
-        let mut current_way_idx = 0;
-        let mut path_ok = true;
-
-        // Start with segments from first way
-        let mut current_segments: Vec<u64> = first_way_segments
-            .iter()
-            .filter(|(seg, _)| {
-                let dist = self.project_point_to_segment_distance(start_point_geo, seg);
-                dist <= self.config.max_matching_distance
-            })
-            .map(|(seg, _)| seg.id)
-            .collect();
-
-        if current_segments.is_empty() {
-            report.summary = format!(
-                "Could not find any segments in way {} near the start point",
-                way_ids[0]
-            );
-            return Ok(report.generate());
-        }
-
-        // Try to follow the path through all ways
-        while current_way_idx < way_ids.len() - 1 {
-            let next_way = way_ids[current_way_idx + 1];
-
-            // Find segments in the next way that connect to any of our current segments
-            let mut next_segments = Vec::new();
-            let next_way_segments = &report.way_segments[&next_way];
-
-            for &current_seg_id in &current_segments {
-                for (next_seg, _) in next_way_segments {
-                    if self.segments_are_connected(current_seg_id, next_seg.id) {
-                        next_segments.push(next_seg.id);
-                    }
-                }
-            }
-
-            if next_segments.is_empty() {
-                path_ok = false;
-                report.path_analysis[current_way_idx].reason +=
-                    " (No valid path found between segments)";
-                break;
-            }
-
-            // Found valid next segments
-            current_segments = next_segments;
-            current_way_idx += 1;
-        }
-
-        // Final path validation - check if last segments reach the end point
-        if path_ok {
-            let last_segments = &report.way_segments[&way_ids[way_ids.len() - 1]];
-            let mut end_reachable = false;
-
-            for &seg_id in &current_segments {
-                if let Some((segment, _)) = last_segments.iter().find(|(s, _)| s.id == seg_id) {
-                    let distance = self.project_point_to_segment_distance(end_point_geo, segment);
-                    if distance <= self.config.max_matching_distance {
-                        end_reachable = true;
-                        break;
-                    }
-                }
-            }
-
-            if !end_reachable {
-                path_ok = false;
-                report.summary = "Found a valid segment path through all ways, but it doesn't reach the end point".to_string();
-            }
-        }
-
-        if !path_ok && report.summary.is_empty() {
-            report.summary =
-                "Could not construct a valid path through all required OSM ways".to_string();
-        } else if path_ok {
-            report.summary =
-                "The specified route SHOULD be matchable through the given OSM way sequence."
-                    .to_string();
-
-            // Add reasons why it might still not be matching
-            report.summary +=
-                "\n\nIf the map matcher is still not using this route, potential reasons include:";
-            report.summary += "\n1. The algorithm's scoring function prefers other routes based on distance, heading, road type, etc.";
-            report.summary += "\n2. The map matcher might be using a different sliding window size that skips some of these connections.";
-            report.summary += "\n3. There might be ambiguities at junctions where multiple paths have similar scores.";
-            report.summary += "\n4. The GPS points might be too noisy or sparse for the matcher to identify this specific sequence.";
-            report.summary += "\n5. The matcher may be imposing constraints on turn angles, road types, or other factors not considered here.";
-        }
-
-        Ok(report.generate())
     }
 
     /// Helper function to check if two segments are connected
@@ -4340,6 +4784,818 @@ impl RouteMatcher {
             ));
         }
     }
+
+    pub fn analyze_segment_connectivity(
+        &self,
+        job: &RouteMatchJob,
+        window_start: usize,
+        window_end: usize,
+    ) -> Result<Value> {
+        // Get the segment candidates for the start and end points
+        let candidates = job.all_candidates.borrow();
+        let start_candidates = candidates
+            .get(window_start)
+            .ok_or_else(|| anyhow!("No candidates for start point"))?;
+        let end_candidates = candidates
+            .get(window_end)
+            .ok_or_else(|| anyhow!("No candidates for end point"))?;
+
+        // Get the segment map
+        let segment_map = job.segment_map.borrow();
+
+        // Create debug geojson with connectivity analysis
+        let mut features = Vec::new();
+
+        // Add start point
+        let start_point = job.gps_points[window_start];
+        features.push(json!({
+            "type": "Feature",
+            "properties": {
+                "type": "start_point",
+                "index": window_start,
+                "description": format!("Start Point #{}", window_start)
+            },
+            "geometry": {
+                "type": "Point",
+                "coordinates": [start_point.x(), start_point.y()]
+            }
+        }));
+
+        // Add end point
+        let end_point = job.gps_points[window_end];
+        features.push(json!({
+            "type": "Feature",
+            "properties": {
+                "type": "end_point",
+                "index": window_end,
+                "description": format!("End Point #{}", window_end)
+            },
+            "geometry": {
+                "type": "Point",
+                "coordinates": [end_point.x(), end_point.y()]
+            }
+        }));
+
+        // Track all segments we'll analyze
+        let mut analyzed_segments = HashSet::new();
+
+        // Add top start candidates
+        for (i, start_candidate) in start_candidates.iter().take(3).enumerate() {
+            let segment = &start_candidate.segment;
+            let coords: Vec<Vec<f64>> =
+                segment.coordinates.iter().map(|c| vec![c.x, c.y]).collect();
+
+            features.push(json!({
+                "type": "Feature",
+                "properties": {
+                    "type": "start_candidate",
+                    "segment_id": segment.id,
+                    "osm_way_id": segment.osm_way_id,
+                    "rank": i,
+                    "distance": start_candidate.distance,
+                    "highway_type": segment.highway_type,
+                    "color": "#00FF00",
+                    "opacity": 0.7,
+                    "weight": 4,
+                    "description": format!("Start Candidate #{}: ID {} (OSM: {}), Distance: {:.2}m",
+                                        i, segment.id, segment.osm_way_id, start_candidate.distance)
+                },
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": coords
+                }
+            }));
+
+            analyzed_segments.insert(segment.id);
+        }
+
+        // Add top end candidates
+        for (i, end_candidate) in end_candidates.iter().take(3).enumerate() {
+            let segment = &end_candidate.segment;
+            let coords: Vec<Vec<f64>> =
+                segment.coordinates.iter().map(|c| vec![c.x, c.y]).collect();
+
+            features.push(json!({
+                "type": "Feature",
+                "properties": {
+                    "type": "end_candidate",
+                    "segment_id": segment.id,
+                    "osm_way_id": segment.osm_way_id,
+                    "rank": i,
+                    "distance": end_candidate.distance,
+                    "highway_type": segment.highway_type,
+                    "color": "#FF0000",
+                    "opacity": 0.7,
+                    "weight": 4,
+                    "description": format!("End Candidate #{}: ID {} (OSM: {}), Distance: {:.2}m",
+                                       i, segment.id, segment.osm_way_id, end_candidate.distance)
+                },
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": coords
+                }
+            }));
+
+            analyzed_segments.insert(segment.id);
+        }
+
+        // Now analyze connectivity between segments
+        let mut connectivity_features = Vec::new();
+
+        // Analyze if top start candidates can connect to end candidates
+        for (i, start_candidate) in start_candidates.iter().take(3).enumerate() {
+            let start_seg = &start_candidate.segment;
+
+            for (j, end_candidate) in end_candidates.iter().take(3).enumerate() {
+                let end_seg = &end_candidate.segment;
+
+                // Skip self-connections
+                if start_seg.id == end_seg.id {
+                    continue;
+                }
+
+                // Check if directly connected
+                let is_directly_connected = start_seg.connections.contains(&end_seg.id)
+                    || end_seg.connections.contains(&start_seg.id);
+
+                // Calculate distance between centroids
+                let start_centroid = start_seg.centroid();
+                let end_centroid = end_seg.centroid();
+                let distance = Haversine.distance(start_centroid, end_centroid);
+
+                // Create connection line
+                connectivity_features.push(json!({
+                    "type": "Feature",
+                    "properties": {
+                        "type": "segment_connection",
+                        "from_segment": start_seg.id,
+                        "to_segment": end_seg.id,
+                        "from_osm_way": start_seg.osm_way_id,
+                        "to_osm_way": end_seg.osm_way_id,
+                        "connected": is_directly_connected,
+                        "distance": distance,
+                        "color": if is_directly_connected { "#00FF00" } else { "#FF0000" },
+                        "opacity": 0.5,
+                        "weight": 2,
+                        "dashArray": if is_directly_connected { "1" } else { "5,5"} ,
+                        "description": format!(
+                            "Connection: Start #{} → End #{}: {} (Distance: {:.2}m)",
+                            i, j,
+                            if is_directly_connected { "CONNECTED" } else { "NOT CONNECTED" },
+                            distance
+                        )
+                    },
+                    "geometry": {
+                        "type": "LineString",
+                        "coordinates": [
+                            [start_centroid.x(), start_centroid.y()],
+                            [end_centroid.x(), end_centroid.y()]
+                        ]
+                    }
+                }));
+
+                // If not directly connected, try to find a path
+                if !is_directly_connected {
+                    // Check if there's a graph
+                    if let Some(graph) = job.graph.borrow().as_ref() {
+                        // Check if both segments are in the graph
+                        if graph.contains_node(start_seg.id) && graph.contains_node(end_seg.id) {
+                            // Check for the shortest path (using just a few nodes to keep visualization clear)
+                            let mut visited = HashSet::new();
+                            let mut queue = VecDeque::new();
+                            let mut came_from = HashMap::new();
+
+                            visited.insert(start_seg.id);
+                            queue.push_back(start_seg.id);
+
+                            const MAX_DEPTH: usize = 5; // Limit search depth
+                            let mut current_depth = 0;
+                            let mut current_node_count = 1;
+                            let mut next_node_count = 0;
+
+                            let mut path_found = false;
+
+                            while let Some(current) = queue.pop_front() {
+                                if current == end_seg.id {
+                                    path_found = true;
+                                    break;
+                                }
+
+                                // Get neighbors
+                                let neighbors: Vec<_> = graph.neighbors(current).collect();
+                                for neighbor in neighbors {
+                                    if !visited.contains(&neighbor) {
+                                        visited.insert(neighbor);
+                                        came_from.insert(neighbor, current);
+                                        queue.push_back(neighbor);
+                                        next_node_count += 1;
+                                    }
+                                }
+
+                                // Track depth
+                                current_node_count -= 1;
+                                if current_node_count == 0 {
+                                    current_depth += 1;
+                                    if current_depth >= MAX_DEPTH {
+                                        break;
+                                    }
+                                    current_node_count = next_node_count;
+                                    next_node_count = 0;
+                                }
+                            }
+
+                            // If path found, reconstruct and visualize it
+                            if path_found {
+                                let mut path = Vec::new();
+                                let mut current = end_seg.id;
+
+                                while current != start_seg.id {
+                                    path.push(current);
+                                    current = came_from[&current];
+                                }
+                                path.push(start_seg.id);
+                                path.reverse();
+
+                                // Add segments in path to analyzed_segments
+                                for &seg_id in &path {
+                                    analyzed_segments.insert(seg_id);
+                                }
+
+                                // Create path visualization
+                                connectivity_features.push(json!({
+                                    "type": "Feature",
+                                    "properties": {
+                                        "type": "potential_path",
+                                        "from_segment": start_seg.id,
+                                        "to_segment": end_seg.id,
+                                        "hops": path.len() - 1,
+                                        "color": "#00FFFF",
+                                        "opacity": 0.7,
+                                        "weight": 3,
+                                        "description": format!(
+                                            "Potential path from Start #{} to End #{}: {} hops",
+                                            i, j, path.len() - 1
+                                        )
+                                    },
+                                    "geometry": {
+                                        "type": "LineString",
+                                        "coordinates": path.iter()
+                                            .filter_map(|&id| segment_map.get(&id))
+                                            .map(|seg| seg.centroid())
+                                            .map(|p| vec![p.x(), p.y()])
+                                            .collect::<Vec<_>>()
+                                    }
+                                }));
+
+                                // Add segments in path
+                                for &seg_id in &path {
+                                    if let Some(segment) = segment_map.get(&seg_id) {
+                                        let coords: Vec<Vec<f64>> = segment
+                                            .coordinates
+                                            .iter()
+                                            .map(|c| vec![c.x, c.y])
+                                            .collect();
+
+                                        features.push(json!({
+                                            "type": "Feature",
+                                            "properties": {
+                                                "type": "path_segment",
+                                                "segment_id": segment.id,
+                                                "osm_way_id": segment.osm_way_id,
+                                                "highway_type": segment.highway_type,
+                                                "color": "#00FFFF",
+                                                "opacity": 0.6,
+                                                "weight": 3,
+                                                "description": format!("Path Segment: ID {} (OSM: {})", 
+                                                    segment.id, segment.osm_way_id)
+                                            },
+                                            "geometry": {
+                                                "type": "LineString",
+                                                "coordinates": coords
+                                            }
+                                        }));
+                                    }
+                                }
+                            } else {
+                                // No path found, explain why
+                                let limit_reached = current_depth >= MAX_DEPTH;
+
+                                connectivity_features.push(json!({
+                                    "type": "Feature",
+                                    "properties": {
+                                        "type": "no_path",
+                                        "from_segment": start_seg.id,
+                                        "to_segment": end_seg.id,
+                                        "reason": if limit_reached {
+                                            "Search depth limit reached" }else {
+                                            "No path exists"},
+                                        "color": "#FF00FF",
+                                        "opacity": 0.5,
+                                        "weight": 1,
+                                        "dashArray": "2,8",
+                                        "description": format!(
+                                            "No path found: Start #{} to End #{}: {}",
+                                            i, j,
+                                            if limit_reached {
+                                                "Search depth limit reached (> 5 hops)"
+                                            } else {
+                                                "No path exists"
+                                            }
+                                        )
+                                    },
+                                    "geometry": {
+                                        "type": "LineString",
+                                        "coordinates": [
+                                            [start_centroid.x(), start_centroid.y()],
+                                            [end_centroid.x(), end_centroid.y()]
+                                        ]
+                                    }
+                                }));
+
+                                // Add visited nodes
+                                for &visited_id in &visited {
+                                    if let Some(segment) = segment_map.get(&visited_id) {
+                                        analyzed_segments.insert(visited_id);
+                                    }
+                                }
+                            }
+                        } else {
+                            // One or both segments not in graph
+                            connectivity_features.push(json!({
+                                "type": "Feature",
+                                "properties": {
+                                    "type": "not_in_graph",
+                                    "from_segment": start_seg.id,
+                                    "to_segment": end_seg.id,
+                                    "from_in_graph": graph.contains_node(start_seg.id),
+                                    "to_in_graph": graph.contains_node(end_seg.id),
+                                    "color": "#FF00FF",
+                                    "opacity": 0.5,
+                                    "weight": 1,
+                                    "dashArray": "5,10",
+                                    "description": format!(
+                                        "Connection impossible: {} not in graph",
+                                        if !graph.contains_node(start_seg.id) && !graph.contains_node(end_seg.id) {
+                                            "Both segments"
+                                        } else if !graph.contains_node(start_seg.id) {
+                                            "Start segment"
+                                        } else {
+                                            "End segment"
+                                        }
+                                    )
+                                },
+                                "geometry": {
+                                    "type": "LineString",
+                                    "coordinates": [
+                                        [start_centroid.x(), start_centroid.y()],
+                                        [end_centroid.x(), end_centroid.y()]
+                                    ]
+                                }
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add all analyzed segments that haven't been added yet
+        for &seg_id in &analyzed_segments {
+            if let Some(segment) = segment_map.get(&seg_id) {
+                let is_start = start_candidates.iter().any(|c| c.segment.id == seg_id);
+                let is_end = end_candidates.iter().any(|c| c.segment.id == seg_id);
+
+                // Skip segments already added as start/end candidates
+                if is_start || is_end {
+                    continue;
+                }
+
+                let coords: Vec<Vec<f64>> =
+                    segment.coordinates.iter().map(|c| vec![c.x, c.y]).collect();
+
+                features.push(json!({
+                    "type": "Feature",
+                    "properties": {
+                        "type": "analyzed_segment",
+                        "segment_id": segment.id,
+                        "osm_way_id": segment.osm_way_id,
+                        "highway_type": segment.highway_type,
+                        "color": "#888888",
+                        "opacity": 0.5,
+                        "weight": 2,
+                        "description": format!("Analyzed Segment: ID {} (OSM: {})",
+                            segment.id, segment.osm_way_id)
+                    },
+                    "geometry": {
+                        "type": "LineString",
+                        "coordinates": coords
+                    }
+                }));
+            }
+        }
+
+        // Add connectivity features after segments for proper layering
+        features.extend(connectivity_features);
+
+        // Create GeoJSON
+        let geojson = json!({
+            "type": "FeatureCollection",
+            "features": features
+        });
+
+        Ok(geojson)
+    }
+
+    pub fn debug_constrained_window_failure(
+        &mut self,
+        job: &RouteMatchJob,
+        window_start: usize,
+        window_end: usize,
+        constraints: &[(usize, u64)],
+    ) -> PathfindingDebugInfo {
+        // Get window data
+        let window_points = &job.gps_points[window_start..=window_end];
+        let window_candidates = &job.all_candidates.borrow()[window_start..=window_end];
+
+        // Create a map from point index in the original array to its relative position in the window
+        let point_idx_map: HashMap<usize, usize> = (window_start..=window_end)
+            .enumerate()
+            .map(|(window_pos, original_idx)| (original_idx, window_pos))
+            .collect();
+
+        // Process constraints
+        let mut constrained_candidates: HashMap<usize, Vec<u64>> = HashMap::new();
+
+        for &(point_idx, segment_id) in constraints {
+            if point_idx < window_start || point_idx > window_end {
+                continue; // Skip constraints outside our window
+            }
+
+            let window_pos = point_idx_map[&point_idx];
+
+            // Find candidates that match the segment ID
+            let segment_map = job.segment_map.borrow();
+            if let Some(segment) = segment_map.get(&segment_id) {
+                let osm_way_id = segment.osm_way_id;
+
+                // Keep track of all candidates for this point with the same OSM way ID
+                let matching_candidates: Vec<u64> = window_candidates[window_pos]
+                    .iter()
+                    .filter(|cand| cand.segment.osm_way_id == osm_way_id)
+                    .map(|cand| cand.segment.id)
+                    .collect();
+
+                if !matching_candidates.is_empty() {
+                    constrained_candidates.insert(window_pos, matching_candidates);
+                }
+            }
+        }
+
+        // Get first and last candidates
+        let first_candidates = window_candidates[0].clone();
+        let last_candidates = window_candidates[window_candidates.len() - 1].clone();
+
+        // Setup debug info
+        let mut debug_info = PathfindingDebugInfo {
+            start_point_idx: window_start,
+            end_point_idx: window_end,
+            start_candidates: first_candidates.clone(),
+            end_candidates: last_candidates.clone(),
+            constraints: constraints.to_vec(),
+            attempted_pairs: Vec::new(),
+            constrained_candidates: constrained_candidates.clone(),
+            reason: "Unable to find valid path between constrained points".to_string(),
+        };
+
+        // Try path finding between each pair of start and end candidates
+        for first_candidate in &first_candidates {
+            for last_candidate in &last_candidates {
+                // Skip if same segment for multi-point windows
+                if first_candidate.segment.id == last_candidate.segment.id
+                    && window_points.len() > 1
+                {
+                    continue;
+                }
+
+                // Calculate max allowed distance
+                let max_distance = Self::max_route_length_from_points(
+                    window_points,
+                    &job.timestamps[window_start..=window_end],
+                );
+
+                // Try to find a path
+                match self.find_path_with_distance_limit_debug(
+                    job,
+                    first_candidate.segment.id,
+                    last_candidate.segment.id,
+                    &HashSet::new(),
+                    max_distance,
+                ) {
+                    Ok((path_cost, path)) => {
+                        // Path found
+                        debug_info.attempted_pairs.push(PathfindingAttempt {
+                            from_segment: first_candidate.segment.id,
+                            from_osm_way: first_candidate.segment.osm_way_id,
+                            to_segment: last_candidate.segment.id,
+                            to_osm_way: last_candidate.segment.osm_way_id,
+                            distance: Haversine.distance(
+                                first_candidate.segment.centroid(),
+                                last_candidate.segment.centroid(),
+                            ),
+                            result: PathfindingResult::Success(path, path_cost),
+                        });
+                    }
+                    Err(e) => {
+                        // Path not found, analyze the reason
+                        let error_msg = e.to_string();
+                        let result = if error_msg.contains("distance limit") {
+                            PathfindingResult::TooFar(
+                                max_distance,
+                                Haversine.distance(
+                                    first_candidate.segment.centroid(),
+                                    last_candidate.segment.centroid(),
+                                ),
+                            )
+                        } else if error_msg.contains("not connected") {
+                            PathfindingResult::NoConnection
+                        } else {
+                            PathfindingResult::NoPathFound(error_msg)
+                        };
+
+                        debug_info.attempted_pairs.push(PathfindingAttempt {
+                            from_segment: first_candidate.segment.id,
+                            from_osm_way: first_candidate.segment.osm_way_id,
+                            to_segment: last_candidate.segment.id,
+                            to_osm_way: last_candidate.segment.osm_way_id,
+                            distance: Haversine.distance(
+                                first_candidate.segment.centroid(),
+                                last_candidate.segment.centroid(),
+                            ),
+                            result,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Analyze results
+        let success_count = debug_info
+            .attempted_pairs
+            .iter()
+            .filter(|attempt| matches!(attempt.result, PathfindingResult::Success(_, _)))
+            .count();
+
+        if success_count == 0 {
+            // Analyze failure reasons
+            let too_far_count = debug_info
+                .attempted_pairs
+                .iter()
+                .filter(|attempt| matches!(attempt.result, PathfindingResult::TooFar(_, _)))
+                .count();
+
+            let no_connection_count = debug_info
+                .attempted_pairs
+                .iter()
+                .filter(|attempt| matches!(attempt.result, PathfindingResult::NoConnection))
+                .count();
+
+            if debug_info.attempted_pairs.is_empty() {
+                debug_info.reason =
+                    "No valid candidate pairs were found to attempt pathfinding".to_string();
+            } else if too_far_count == debug_info.attempted_pairs.len() {
+                debug_info.reason =
+                    "All candidate pairs exceed the maximum distance limit".to_string();
+            } else if no_connection_count == debug_info.attempted_pairs.len() {
+                debug_info.reason =
+                    "No connection exists between any start and end candidates".to_string();
+            } else {
+                debug_info.reason = format!(
+                    "Mixed pathfinding failures: {}/{} too far, {}/{} no connection, others failed during A*",
+                    too_far_count,
+                    debug_info.attempted_pairs.len(),
+                    no_connection_count,
+                    debug_info.attempted_pairs.len()
+                );
+            }
+        } else {
+            debug_info.reason = format!(
+                "Found {} successful paths, but constraints may prevent using them",
+                success_count
+            );
+        }
+
+        debug_info
+    }
+
+    // Debug path finding with distance limit
+    /// Debug path finding with distance limit
+    fn find_path_with_distance_limit_debug(
+        &self,
+        job: &RouteMatchJob,
+        from: u64,
+        to: u64,
+        used_segments: &HashSet<u64>,
+        max_distance: f64,
+    ) -> Result<(f64, Vec<WaySegment>)> {
+        // First check if segments are directly connected
+        let segment_map = job.segment_map.borrow();
+
+        if let (Some(from_segment), Some(to_segment)) =
+            (segment_map.get(&from), segment_map.get(&to))
+        {
+            // Find common nodes
+            let common_nodes: Vec<u64> = from_segment
+                .nodes
+                .iter()
+                .filter(|&&n| to_segment.nodes.contains(&n))
+                .cloned()
+                .collect();
+
+            // Determine entry node (use first common node or None)
+            let entry_node = common_nodes.first().cloned();
+
+            // Check direct connection first
+            if from_segment.connections.contains(&to) || to_segment.connections.contains(&from) {
+                // Directly connected, return immediate path with precise entry node
+                let cost = calculate_transition_cost(from_segment, to_segment, entry_node);
+                return Ok((cost, vec![from_segment.clone(), to_segment.clone()]));
+            }
+
+            // Check for missing graph
+            if job.graph.borrow().is_none() {
+                return Err(anyhow!("Graph not initialized"));
+            }
+
+            // Check if nodes are in graph
+            let graph = job.graph.borrow();
+            if !graph.as_ref().unwrap().contains_node(from)
+                || !graph.as_ref().unwrap().contains_node(to)
+            {
+                return Err(anyhow!("One or both segments not in graph"));
+            }
+
+            // Calculate distance between centroids
+            let distance = Haversine.distance(from_segment.centroid(), to_segment.centroid());
+            if distance > max_distance * 1.5 {
+                return Err(anyhow!(
+                    "Direct distance between segments ({:.2}m) exceeds max limit ({:.2}m)",
+                    distance,
+                    max_distance
+                ));
+            }
+        } else {
+            return Err(anyhow!("One or both segments not found in segment map"));
+        }
+
+        // If not directly connected, use the original A* implementation
+        self.find_path_with_distance_limit(job, from, to, used_segments, max_distance)
+    }
+
+    pub fn debug_direct_segment_routing(
+        &mut self,
+        job: &RouteMatchJob,
+        from_segment_id: u64,
+        to_segment_id: u64,
+    ) -> PathfindingDebugInfo {
+        // Set up debug info
+        let mut debug_info = PathfindingDebugInfo {
+            start_point_idx: 0, // Using 0 as placeholder
+            end_point_idx: 1,   // Using 1 as placeholder
+            start_candidates: Vec::new(),
+            end_candidates: Vec::new(),
+            constraints: Vec::new(),
+            attempted_pairs: Vec::new(),
+            constrained_candidates: HashMap::new(),
+            reason: "Direct segment route analysis".to_string(),
+        };
+
+        let segment_map = job.segment_map.borrow();
+
+        // Try to get segments
+        let start_segment = match segment_map.get(&from_segment_id) {
+            Some(seg) => seg,
+            None => {
+                debug_info.reason = format!("Start segment {} not found", from_segment_id);
+                return debug_info;
+            }
+        };
+
+        let end_segment = match segment_map.get(&to_segment_id) {
+            Some(seg) => seg,
+            None => {
+                debug_info.reason = format!("End segment {} not found", to_segment_id);
+                return debug_info;
+            }
+        };
+
+        // Create candidate entries for the UI
+        let start_projection = start_segment.centroid();
+        debug_info.start_candidates.push(SegmentCandidate {
+            segment: start_segment.clone(),
+            distance: 0.0, // Direct selection, not from a GPS point
+            projection: start_projection,
+            score: 0.0, // Perfect score for direct selection
+        });
+
+        let end_projection = end_segment.centroid();
+        debug_info.end_candidates.push(SegmentCandidate {
+            segment: end_segment.clone(),
+            distance: 0.0, // Direct selection, not from a GPS point
+            projection: end_projection,
+            score: 0.0, // Perfect score for direct selection
+        });
+
+        // Calculate direct distance between segments
+        let direct_distance = Haversine.distance(start_projection, end_projection);
+
+        // Determine max allowed distance (use a multiple of the direct distance)
+        let max_distance = (direct_distance * 3.0).max(2000.0); // At least 2km
+
+        // Try to find a path using a clean search
+        let attempt = match self.find_path_with_distance_limit_debug(
+            job,
+            from_segment_id,
+            to_segment_id,
+            &HashSet::new(),
+            max_distance,
+        ) {
+            Ok((path_cost, path)) => {
+                // Success
+                PathfindingAttempt {
+                    from_segment: from_segment_id,
+                    from_osm_way: start_segment.osm_way_id,
+                    to_segment: to_segment_id,
+                    to_osm_way: end_segment.osm_way_id,
+                    distance: direct_distance,
+                    result: PathfindingResult::Success(path, path_cost),
+                }
+            }
+            Err(e) => {
+                // Handle different failure cases
+                let error_msg = e.to_string();
+                let result = if error_msg.contains("distance limit") {
+                    PathfindingResult::TooFar(max_distance, direct_distance)
+                } else if error_msg.contains("not connected") || error_msg.contains("No connection")
+                {
+                    PathfindingResult::NoConnection
+                } else {
+                    PathfindingResult::NoPathFound(error_msg)
+                };
+
+                PathfindingAttempt {
+                    from_segment: from_segment_id,
+                    from_osm_way: start_segment.osm_way_id,
+                    to_segment: to_segment_id,
+                    to_osm_way: end_segment.osm_way_id,
+                    distance: direct_distance,
+                    result,
+                }
+            }
+        };
+
+        // Add the attempt to our debug info
+        debug_info.attempted_pairs.push(attempt);
+
+        // Detailed connectivity analysis
+        // Check for direct connections
+        let directly_connected = start_segment.connections.contains(&to_segment_id)
+            || end_segment.connections.contains(&from_segment_id);
+
+        if !directly_connected {
+            // If not directly connected, try to figure out why
+            let (should_connect, reason) = self.should_segments_connect(start_segment, end_segment);
+            if should_connect {
+                debug_info.reason = format!(
+                    "Segments should be connected based on: {}, but no connection exists in the graph",
+                    reason
+                );
+            } else {
+                debug_info.reason = format!("Segments are not connected: {}", reason);
+            }
+
+            // The connectivity issues
+            let issues = self.analyze_connectivity_failure(start_segment, end_segment);
+            if !issues.is_empty() {
+                debug_info.reason =
+                    format!("{}. Issues: {}", debug_info.reason, &issues.join(", "));
+            }
+        } else if debug_info.attempted_pairs[0].result.is_success() {
+            debug_info.reason =
+                "Route found successfully! Segments are properly connected.".to_string();
+        } else {
+            debug_info.reason =
+                "Segments are directly connected but path finding failed.".to_string();
+        }
+
+        // Add information about connections from the start segment
+        debug_info.reason += format!(
+            "\nStart segment has {} outgoing connections, end segment has {} connections",
+            start_segment.connections.len(),
+            end_segment.connections.len()
+        )
+        .as_str();
+
+        debug_info
+    }
 }
 
 /// Custom binary heap implementation with key-value pairs
@@ -4370,15 +5626,56 @@ impl<K: Ord, V> BinaryHeap<K, V> {
     }
 }
 
-fn calculate_transition_cost(from_seg: &WaySegment, to_seg: &WaySegment) -> f64 {
-    // Calculate geographic distance
-    let from_end = from_seg.coordinates.last().unwrap();
-    let to_start = to_seg.coordinates.first().unwrap();
+/// Calculate the traversal cost between two road segments
+fn calculate_transition_cost(
+    from_seg: &WaySegment,
+    to_seg: &WaySegment,
+    entry_node: Option<u64>,
+) -> f64 {
+    panic!("THIS IS LIKELY WRONG");
+    /*
+    - Check how to link between node IDs and coordinate indexes of the segments
+    - The entry node needs to be 0 or higher index
+    - The exit node on the to_seg needs to be the last index or less
+    - The code below fumbles this completely best to disregard.
+     */
+    // Early validation
+    if from_seg.coordinates.is_empty() || to_seg.coordinates.is_empty() {
+        return f64::INFINITY;
+    }
 
-    let from_point = Point::new(from_end.x, from_end.y);
-    let to_point = Point::new(to_start.x, to_start.y);
+    // Determine the connection node
+    let connection_node = match entry_node {
+        Some(node) => node,
+        None => match find_connection_node(from_seg, to_seg) {
+            Some(node) => node,
+            None => *from_seg.nodes.first().unwrap(),
+        },
+    };
 
-    let distance = Haversine.distance(from_point, to_point);
+    // Find entry and exit points based on connection node
+    let (start_idx, exit_idx) =
+        calculate_segment_traversal_indices(from_seg, to_seg, connection_node);
+
+    // Ensure we have a valid coordinate range
+    if start_idx >= from_seg.coordinates.len() || exit_idx >= from_seg.coordinates.len() {
+        return f64::INFINITY; // Minimal cost for out-of-bounds indices
+    }
+
+    // Calculate actual traversed distance along segment geometry
+    let traversed_coords = &from_seg.coordinates[start_idx..=exit_idx];
+
+    // Handle case where traversed_coords is too short
+    let segment_length = if traversed_coords.len() > 1 {
+        let traversal_line = LineString::from(traversed_coords.to_vec());
+        traversal_line.euclidean_length()
+    } else if !from_seg.coordinates.is_empty() {
+        // If only one coordinate, use a minimal length
+        0.1
+    } else {
+        // Fallback for empty segment
+        1.0
+    };
 
     // Apply road type factor
     let type_factor = match to_seg.highway_type.as_str() {
@@ -4398,27 +5695,97 @@ fn calculate_transition_cost(from_seg: &WaySegment, to_seg: &WaySegment) -> f64 
         _ => 3.5,
     };
 
-    // Final cost is distance with road type factor
-    (distance / 100.0) * type_factor
+    // Continuity bonus
+    let continuity_factor = if from_seg.osm_way_id == to_seg.osm_way_id {
+        0.9 // 10% discount for staying on the same road
+    } else {
+        1.0
+    };
+
+    // Final cost combines traversed distance, road type, and continuity
+    ((segment_length / 100.0) * type_factor * continuity_factor) + 1.0
+}
+
+/// Calculate the indices for traversing a segment based on connection node
+fn calculate_segment_traversal_indices(
+    from_seg: &WaySegment,
+    to_seg: &WaySegment,
+    connection_node: u64,
+) -> (usize, usize) {
+    // Validate input segments have coordinates and nodes
+    if from_seg.coordinates.is_empty() || from_seg.nodes.is_empty() {
+        return (0, 0);
+    }
+
+    // Find the index of the connection node in both segments
+    let from_node_idx = from_seg
+        .nodes
+        .iter()
+        .position(|&n| n == connection_node)
+        .unwrap_or(0); // Default to start if not found
+
+    let to_node_idx = to_seg
+        .nodes
+        .iter()
+        .position(|&n| n == connection_node)
+        .unwrap_or(*to_seg.nodes.last().unwrap() as usize); // Default to last if not found
+
+    // Determine start and end indices for traversal
+    let start_idx = from_node_idx.min(from_seg.coordinates.len().saturating_sub(1));
+    let exit_idx = to_node_idx.min(to_seg.coordinates.len().saturating_sub(1));
+
+    // Ensure start_idx <= exit_idx and within bounds
+    if start_idx > exit_idx {
+        (exit_idx, start_idx)
+    } else {
+        (start_idx, exit_idx)
+    }
+}
+
+// Helper function to find the connection node between two segments
+fn find_connection_node(segment1: &WaySegment, segment2: &WaySegment) -> Option<u64> {
+    // Check direct connections via shared nodes
+    let shared_nodes: Vec<u64> = segment1
+        .nodes
+        .iter()
+        .filter(|n| segment2.nodes.contains(n))
+        .cloned()
+        .collect();
+
+    if !shared_nodes.is_empty() {
+        // Prefer endpoints of segments if possible
+        let segment1_endpoints = [*segment1.nodes.first()?, *segment1.nodes.last()?];
+        let segment2_endpoints = [*segment2.nodes.first()?, *segment2.nodes.last()?];
+
+        // Check for shared endpoint nodes first (preferred)
+        for &node in &shared_nodes {
+            if segment1_endpoints.contains(&node) && segment2_endpoints.contains(&node) {
+                return Some(node);
+            }
+        }
+
+        // If no shared endpoints, return the first shared node
+        return Some(shared_nodes[0]);
+    }
+
+    // If no shared nodes, check if segments have explicit connections
+    if segment1.connections.contains(&segment2.id) {
+        // Use endpoints as best guess
+        return Some(*segment1.nodes.last()?);
+    }
+
+    if segment2.connections.contains(&segment1.id) {
+        // Use endpoints as best guess
+        return Some(*segment2.nodes.first()?);
+    }
+
+    None
 }
 
 pub fn calculate_heading(from: Point<f64>, to: Point<f64>) -> f64 {
     let dx = to.x() - from.x();
     let dy = to.y() - from.y();
     dy.atan2(dx).to_degrees()
-}
-
-/// Structure to hold a debug report for route analysis
-struct DebugReport {
-    start_point: geo::Point<f64>,
-    end_point: geo::Point<f64>,
-    way_ids: Vec<u64>,
-    way_segments: HashMap<u64, Vec<(WaySegment, String)>>,
-    ways_not_found: Vec<u64>,
-    way_candidates: HashMap<u64, Vec<u64>>,
-    segment_connections: HashMap<u64, Vec<u64>>,
-    path_analysis: Vec<PathSegmentAnalysis>,
-    summary: String,
 }
 
 struct PathSegmentAnalysis {
@@ -4428,83 +5795,4 @@ struct PathSegmentAnalysis {
     connected: bool,
     reason: String,
     details: Vec<String>,
-}
-
-impl DebugReport {
-    fn generate(&self) -> String {
-        let mut report = String::new();
-
-        // Header
-        report.push_str("Route Debug Report\n");
-        report.push_str("=================\n\n");
-
-        // Summary
-        report.push_str(&format!("SUMMARY: {}\n\n", self.summary));
-
-        // Basic information
-        report.push_str(&format!(
-            "Start Point: ({}, {})\n",
-            self.start_point.x(),
-            self.start_point.y()
-        ));
-        report.push_str(&format!(
-            "End Point: ({}, {})\n",
-            self.end_point.x(),
-            self.end_point.y()
-        ));
-        report.push_str(&format!("Requested Way IDs: {:?}\n\n", self.way_ids));
-
-        // Way availability
-        if !self.ways_not_found.is_empty() {
-            report.push_str(&format!("Ways Not Found: {:?}\n", self.ways_not_found));
-        }
-
-        // Way segment information
-        report.push_str("Way Segments:\n");
-        for (&way_id, segments) in &self.way_segments {
-            report.push_str(&format!(
-                "  Way ID {}: {} segments\n",
-                way_id,
-                segments.len()
-            ));
-            for (i, (segment, tile_id)) in segments.iter().enumerate() {
-                report.push_str(&format!(
-                    "    Segment #{}: ID {}, Tile {}, Highway {}, Oneway: {}, Connections: {}\n",
-                    i,
-                    segment.id,
-                    tile_id,
-                    segment.highway_type,
-                    segment.is_oneway,
-                    segment.connections.len()
-                ));
-            }
-        }
-        report.push('\n');
-
-        // Path analysis
-        report.push_str("Path Analysis:\n");
-        for analysis in &self.path_analysis {
-            report.push_str(&format!(
-                "  Step {} (Way {} → {}): {}\n",
-                analysis.segment_idx,
-                analysis.way_id1,
-                analysis.way_id2,
-                if analysis.connected {
-                    "CONNECTED"
-                } else {
-                    "NOT CONNECTED"
-                }
-            ));
-            report.push_str(&format!("    Reason: {}\n", analysis.reason));
-
-            if !analysis.details.is_empty() {
-                report.push_str("    Details:\n");
-                for detail in &analysis.details {
-                    report.push_str(&format!("      - {}\n", detail));
-                }
-            }
-        }
-
-        report
-    }
 }

@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { LatLon, RequestParameters, RouteMatchTrace, Trips } from "./chronotopia_pb.js";
+import { ConnectivityRequest, LatLon, PathfindingDebugInfo, RequestParameters, RouteMatchTrace, Trips, WindowDebugRequest } from "./chronotopia_pb.js";
 import { Empty, MethodKind, StringValue } from "@bufbuild/protobuf";
 
 /**
@@ -37,6 +37,24 @@ export const Chronotopia = {
       name: "OSMNetworkAroundPoint",
       I: LatLon,
       O: StringValue,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc chronotopia.Chronotopia.AnalyzeSegmentConnectivity
+     */
+    analyzeSegmentConnectivity: {
+      name: "AnalyzeSegmentConnectivity",
+      I: ConnectivityRequest,
+      O: StringValue,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc chronotopia.Chronotopia.DebugWindowPathFinding
+     */
+    debugWindowPathFinding: {
+      name: "DebugWindowPathFinding",
+      I: WindowDebugRequest,
+      O: PathfindingDebugInfo,
       kind: MethodKind.Unary,
     },
   }

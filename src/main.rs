@@ -9,15 +9,20 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
-use chrono::DateTime;
+use chrono::{DateTime, Utc};
 use geo::{Coord, Distance, Haversine, Point};
 use http::Method;
 use io::google_maps_local_timeline::LocationHistoryEntry;
 use log::{debug, info, warn};
+use osm_preprocessing::WaySegment;
 use proto::chronotopia_server::{Chronotopia, ChronotopiaServer};
-use proto::{LatLon, RequestParameters, RouteMatchTrace, Trip, Trips};
+use proto::{
+    ConnectivityRequest, LatLon, RequestParameters, RouteMatchTrace, Trip, Trips,
+    WindowDebugRequest,
+};
 use route_matcher::{
-    MatchedWaySegment, RouteMatchJob, RouteMatcher, RouteMatcherConfig, TileConfig, WindowTrace,
+    MatchedWaySegment, PathfindingDebugInfo, PathfindingResult, RouteMatchJob, RouteMatcher,
+    RouteMatcherConfig, TileConfig, WindowTrace,
 };
 use serde_json::json;
 use tokio::fs::File;
@@ -57,6 +62,12 @@ async fn main() -> Result<()> {
     // Create route matcher
     let route_matcher = RouteMatcher::new(route_matcher_config.clone())?;
 
+    // let r = route_matcher
+    //     .check_way_sequence_connectivity(&vec![53752193, 38508667, 626508570, 38508696])?;
+    // for stra in r {
+    //     println!("{}", stra);
+    // }
+
     // Check if preprocessing is needed
     if !Path::new(&route_matcher_config.tile_cache_dir).exists() {
         info!("Tile cache directory doesn't exist. Starting preprocessing...");
@@ -93,6 +104,7 @@ async fn main() -> Result<()> {
     let mut chronotopia_service = ChronotopiaService {
         location_history,
         route_matcher: Mutex::new(route_matcher),
+        last_job: Arc::new(Mutex::new(None)),
         last_job_trace: Arc::new(Mutex::new(None)),
         processed_count: 0,
         successful_matches: 0,
@@ -137,6 +149,7 @@ async fn main() -> Result<()> {
 struct ChronotopiaService {
     location_history: Vec<LocationHistoryEntry>,
     route_matcher: Mutex<RouteMatcher>,
+    last_job: Arc<Mutex<Option<RouteMatchJob>>>,
     last_job_trace: Arc<Mutex<Option<RouteMatchTrace>>>,
     successful_matches: usize,
     processed_count: usize,
@@ -217,16 +230,9 @@ impl ChronotopiaService {
 
         let mut job = RouteMatchJob::new(gps_points, timestamps, None);
         job.activate_tracing();
-
-        job.expect_subsequence(
-            31,
-            33,
-            vec![
-                508483977, 783203095, 940072557, 783216745, 795038347, 47858106, 911339384,
-                45258353, 302391995, 955052792, 50485404, 438473867, 438473868, 438473845,
-                794589960, 42339853, 794589959, 20442589, 237171377, 53752193,
-            ],
-        );
+        let mut last_job = self.last_job.lock().await;
+        *last_job = Some(job.clone());
+        // job.expect_subsequence(33, 34, vec![38508667, 626508570, 38508696]);
 
         // Perform map matching with debug way IDs
         info!("Map matching trip with {} points", job.gps_points.len());
@@ -279,6 +285,141 @@ impl ChronotopiaService {
         last_job_trace.replace(rmj);
 
         Ok(job)
+    }
+
+    /// Get constraints for a specific window
+    async fn get_window_constraints(
+        &self,
+        start_point: usize,
+        end_point: usize,
+    ) -> Result<Vec<(usize, u64)>, Status> {
+        let mut constraints = Vec::new();
+
+        // Get the last job trace
+        let last_job_trace = self.last_job_trace.lock().await;
+
+        if let Some(trace) = last_job_trace.as_ref() {
+            // Find the window that contains these points
+            for window in &trace.window_traces {
+                if window.start as usize == start_point && window.end as usize == end_point {
+                    // Extract constraints
+                    for constraint in &window.constraints {
+                        constraints.push((constraint.point_idx as usize, constraint.segment_id));
+                    }
+                    break;
+                }
+            }
+        }
+
+        Ok(constraints)
+    }
+
+    async fn load_tiles_for_segments(
+        &self,
+        route_matcher: &mut RouteMatcher,
+        from_segment_id: u64,
+        to_segment_id: u64,
+    ) -> Result<(), Status> {
+        // First try to find the tile containing segment1
+        let tile_id1 = match route_matcher.tile_loader.find_segment_tile(from_segment_id) {
+            Ok(id) => id,
+            Err(_) => {
+                return Err(Status::not_found(format!(
+                    "Segment {} not found",
+                    from_segment_id
+                )));
+            }
+        };
+
+        // Then try to find the tile containing segment2
+        let tile_id2 = match route_matcher.tile_loader.find_segment_tile(to_segment_id) {
+            Ok(id) => id,
+            Err(_) => {
+                return Err(Status::not_found(format!(
+                    "Segment {} not found",
+                    to_segment_id
+                )));
+            }
+        };
+
+        // Load the two tiles
+        let _ = route_matcher.tile_loader.load_tile(&tile_id1).unwrap();
+        let _ = route_matcher.tile_loader.load_tile(&tile_id2).unwrap();
+
+        // Load segments
+        let segment1 = match route_matcher.tile_loader.get_segment(from_segment_id) {
+            Ok(s) => s,
+            Err(_) => {
+                return Err(Status::not_found(format!(
+                    "Failed to load segment {}",
+                    from_segment_id
+                )));
+            }
+        };
+
+        let segment2 = match route_matcher.tile_loader.get_segment(to_segment_id) {
+            Ok(s) => s,
+            Err(_) => {
+                return Err(Status::not_found(format!(
+                    "Failed to load segment {}",
+                    to_segment_id
+                )));
+            }
+        };
+
+        // Calculate a bounding box that includes both segments with a buffer
+        let min_x = segment1
+            .coordinates
+            .iter()
+            .map(|c| c.x)
+            .chain(segment2.coordinates.iter().map(|c| c.x))
+            .fold(f64::MAX, |acc, x| acc.min(x));
+
+        let min_y = segment1
+            .coordinates
+            .iter()
+            .map(|c| c.y)
+            .chain(segment2.coordinates.iter().map(|c| c.y))
+            .fold(f64::MAX, |acc, y| acc.min(y));
+
+        let max_x = segment1
+            .coordinates
+            .iter()
+            .map(|c| c.x)
+            .chain(segment2.coordinates.iter().map(|c| c.x))
+            .fold(f64::MIN, |acc, x| acc.max(x));
+
+        let max_y = segment1
+            .coordinates
+            .iter()
+            .map(|c| c.y)
+            .chain(segment2.coordinates.iter().map(|c| c.y))
+            .fold(f64::MIN, |acc, y| acc.max(y));
+
+        // Add a buffer (approximately 1km in degrees)
+        let buffer = 0.01;
+        let bbox = geo::Rect::new(
+            geo::Coord {
+                x: min_x - buffer,
+                y: min_y - buffer,
+            },
+            geo::Coord {
+                x: max_x + buffer,
+                y: max_y + buffer,
+            },
+        );
+
+        // Load all tiles in the bounding box
+        let loaded_tiles = route_matcher
+            .tile_loader
+            .load_tile_range(
+                bbox, buffer, 200, // Allow many tiles to be loaded
+            )
+            .map_err(|e| Status::internal(format!("Failed to load tiles: {}", e)))?;
+
+        info!("Loaded {} tiles for segment routing", loaded_tiles.len());
+
+        Ok(())
     }
 }
 
@@ -459,6 +600,197 @@ impl Chronotopia for ChronotopiaService {
             Ok(Response::new(rj.clone()))
         } else {
             Err(Status::not_found(""))
+        }
+    }
+
+    async fn debug_window_path_finding(
+        &self,
+        request: Request<WindowDebugRequest>,
+    ) -> Result<Response<proto::PathfindingDebugInfo>, Status> {
+        let req = request.into_inner();
+
+        if let (Some(from_segment_id), Some(to_segment_id)) =
+            (req.from_segment_id, req.to_segment_id)
+        {
+            info!(
+                "Debugging direct segment pathfinding between segments {} and {}",
+                from_segment_id, to_segment_id
+            );
+
+            let mut route_matcher = self.route_matcher.lock().await;
+
+            // Create a temporary job for debugging
+            let mut job = RouteMatchJob::new(
+                vec![Point::new(0.0, 0.0), Point::new(0.0, 0.0)], // Dummy points
+                vec![Utc::now(), Utc::now()],                     // Dummy timestamps
+                None,
+            );
+            job.activate_tracing();
+
+            // Load surrounding tiles to make sure we have the necessary data
+            self.load_tiles_for_segments(&mut route_matcher, from_segment_id, to_segment_id)
+                .await?;
+
+            // Copy graph and segment map from route matcher
+            let loaded_tiles = route_matcher
+                .tile_loader
+                .loaded_tiles
+                .keys()
+                .cloned()
+                .collect();
+
+            let graph = route_matcher.build_road_network(&loaded_tiles).unwrap();
+            job.graph.replace(Some(graph.0));
+            job.segment_map.replace(graph.1);
+
+            // Generate detailed debug info for direct segment routing
+            let debug_info =
+                route_matcher.debug_direct_segment_routing(&job, from_segment_id, to_segment_id);
+
+            return Ok(Response::new(debug_info.into()));
+        }
+
+        let window_index = req.window_index as usize;
+        let start_point = req.start_point as usize;
+        let end_point = req.end_point as usize;
+
+        info!(
+            "Debugging window pathfinding for window {}, points {}-{}",
+            window_index, start_point, end_point
+        );
+
+        // Get previously failed windows info
+        let mut route_matcher = self.route_matcher.lock().await;
+
+        // Get relevant constraints for this window
+        let constraints = self.get_window_constraints(start_point, end_point).await?;
+
+        // Create a temporary job for debugging
+        let last_job = self.last_job.lock().await;
+        let mut job = last_job.clone().unwrap();
+        job.activate_tracing();
+
+        // Copy graph and segment map from route matcher
+        let loaded_tiles = route_matcher
+            .tile_loader
+            .loaded_tiles
+            .keys()
+            .cloned()
+            .collect();
+        let graph = route_matcher.build_road_network(&loaded_tiles).unwrap();
+        job.graph.replace(Some(graph.0));
+        job.segment_map.replace(graph.1);
+
+        // Find candidate segments for all points
+        route_matcher
+            .find_all_candidate_segments(&job, loaded_tiles)
+            .unwrap();
+
+        // Generate detailed debug info for this window
+        let debug_info = route_matcher.debug_constrained_window_failure(
+            &job,
+            start_point,
+            end_point,
+            &constraints,
+        );
+
+        Ok(Response::new(debug_info.into()))
+    }
+
+    /// Analyze segment connectivity
+    async fn analyze_segment_connectivity(
+        &self,
+        request: Request<ConnectivityRequest>,
+    ) -> Result<Response<prost::alloc::string::String>, Status> {
+        let req = request.into_inner();
+        if let (Some(start_point_index), Some(end_point_index)) =
+            (req.start_point_index, req.end_point_index)
+        {
+            let start_point = start_point_index as usize;
+            let end_point = end_point_index as usize;
+
+            info!(
+                "Analyzing segment connectivity between points {}-{}",
+                start_point, end_point
+            );
+
+            // Create a temporary job for connectivity analysis
+            let mut route_matcher = self.route_matcher.lock().await;
+
+            let last_job = self.last_job.lock().await;
+            let job = last_job.clone().unwrap();
+
+            // Copy graph and segment map from route matcher
+            let loaded_tiles = route_matcher
+                .tile_loader
+                .loaded_tiles
+                .keys()
+                .cloned()
+                .collect();
+
+            // Copy graph and segment map from route matcher
+            let graph = route_matcher.build_road_network(&loaded_tiles).unwrap();
+            job.graph.replace(Some(graph.0));
+            job.segment_map.replace(graph.1);
+
+            // Find candidate segments for all points
+            route_matcher
+                .find_all_candidate_segments(&job, loaded_tiles)
+                .unwrap();
+
+            // Generate connectivity visualization
+            let geojson = route_matcher
+                .analyze_segment_connectivity(&job, start_point, end_point)
+                .unwrap();
+
+            Ok(Response::new(serde_json::to_string(&geojson).unwrap()))
+        } else if let (Some(from_segment_id), Some(to_segment_id)) =
+            (req.from_segment_id, req.to_segment_id)
+        {
+            info!(
+                "Analyzing segment connectivity between points {:?}-{:?}",
+                from_segment_id, to_segment_id
+            );
+
+            let mut route_matcher = self.route_matcher.lock().await;
+
+            // Create a temporary job for debugging
+            let mut job = RouteMatchJob::new(
+                vec![Point::new(0.0, 0.0), Point::new(0.0, 0.0)], // Dummy points
+                vec![Utc::now(), Utc::now()],                     // Dummy timestamps
+                None,
+            );
+            job.activate_tracing();
+
+            // Load surrounding tiles to make sure we have the necessary data
+            self.load_tiles_for_segments(&mut route_matcher, from_segment_id, to_segment_id)
+                .await?;
+
+            // Copy graph and segment map from route matcher
+            let loaded_tiles = route_matcher
+                .tile_loader
+                .loaded_tiles
+                .keys()
+                .cloned()
+                .collect();
+
+            // Copy graph and segment map from route matcher
+            let graph = route_matcher.build_road_network(&loaded_tiles).unwrap();
+            job.graph.replace(Some(graph.0));
+            job.segment_map.replace(graph.1);
+
+            // Generate connectivity visualization
+            let geojson = route_matcher
+                .analyze_segment_connectivity(
+                    &job,
+                    from_segment_id as usize,
+                    to_segment_id as usize,
+                )
+                .unwrap();
+
+            Ok(Response::new(serde_json::to_string(&geojson).unwrap()))
+        } else {
+            Err(Status::invalid_argument(""))
         }
     }
 
@@ -666,6 +998,36 @@ impl From<&MatchedWaySegment> for proto::RoadSegment {
     }
 }
 
+impl From<&WaySegment> for proto::RoadSegment {
+    fn from(segment: &WaySegment) -> Self {
+        // Get the actual coordinates based on interim indices
+        let coords = segment.coordinates.clone();
+
+        // Save the original full coordinates for reference
+        let full_coords = segment
+            .coordinates
+            .iter()
+            .map(|v| proto::LatLon { lat: v.y, lon: v.x })
+            .collect();
+
+        Self {
+            id: segment.id,
+            osm_way_id: segment.osm_way_id,
+            coordinates: coords
+                .iter()
+                .map(|v| proto::LatLon { lat: v.y, lon: v.x })
+                .collect(),
+            is_oneway: segment.is_oneway,
+            highway_type: segment.highway_type.clone(),
+            connections: segment.connections.clone(),
+            name: segment.name.clone(),
+            interim_start_idx: None,
+            interim_end_idx: None,
+            full_coordinates: full_coords,
+        }
+    }
+}
+
 impl From<&WindowTrace> for proto::WindowTrace {
     fn from(window_trace: &WindowTrace) -> Self {
         Self {
@@ -673,7 +1035,156 @@ impl From<&WindowTrace> for proto::WindowTrace {
             end: window_trace.end as u32,
             segments: window_trace.segments.iter().map(|v| v.into()).collect(),
             bridge: window_trace.bridge,
+            // Add new debug fields
+            constraints: window_trace
+                .constraints
+                .iter()
+                .map(|constraint| proto::PointConstraint {
+                    point_idx: constraint.point_idx as u32,
+                    segment_id: constraint.segment_id,
+                    way_id: constraint.way_id,
+                    distance: constraint.distance,
+                })
+                .collect(),
+            used_constraints: window_trace.used_constraints,
+            constraint_score: window_trace.constraint_score,
+            unconstrained_score: window_trace.unconstrained_score,
+            attempted_way_ids: window_trace.attempted_way_ids.clone(),
+            debug_notes: window_trace.debug_notes.clone(),
         }
+    }
+}
+
+impl From<PathfindingDebugInfo> for proto::PathfindingDebugInfo {
+    fn from(debug_info: PathfindingDebugInfo) -> Self {
+        // Convert start candidates
+        let start_candidates: Vec<proto::SegmentCandidate> = debug_info
+            .start_candidates
+            .iter()
+            .map(|candidate| proto::SegmentCandidate {
+                segment: Some((&candidate.segment).into()),
+                distance: candidate.distance,
+                projection: Some(proto::Point {
+                    latlon: Some(proto::LatLon {
+                        lat: candidate.projection.y(),
+                        lon: candidate.projection.x(),
+                    }),
+                    timestamp: None,
+                    label: None,
+                    note: None,
+                    elevation: None,
+                }),
+                score: candidate.score,
+            })
+            .collect();
+
+        // Convert end candidates
+        let end_candidates: Vec<proto::SegmentCandidate> = debug_info
+            .end_candidates
+            .iter()
+            .map(|candidate| proto::SegmentCandidate {
+                segment: Some((&candidate.segment).into()),
+                distance: candidate.distance,
+                projection: Some(proto::Point {
+                    latlon: Some(proto::LatLon {
+                        lat: candidate.projection.y(),
+                        lon: candidate.projection.x(),
+                    }),
+                    timestamp: None,
+                    label: None,
+                    note: None,
+                    elevation: None,
+                }),
+                score: candidate.score,
+            })
+            .collect();
+
+        // Convert constraints
+        let constraints: Vec<proto::PointConstraintPair> = debug_info
+            .constraints
+            .iter()
+            .map(|(point_idx, segment_id)| proto::PointConstraintPair {
+                point_idx: *point_idx as u32,
+                segment_id: *segment_id,
+            })
+            .collect();
+
+        // Convert constrained candidates map
+        let mut constrained_candidates = HashMap::new();
+        for (point_idx, seg_ids) in &debug_info.constrained_candidates {
+            constrained_candidates.insert(*point_idx as u32, seg_ids.len() as u32);
+        }
+
+        // Convert attempted pairs
+        let attempted_pairs: Vec<proto::PathfindingAttempt> = debug_info
+            .attempted_pairs
+            .iter()
+            .map(|attempt| {
+                let result = match &attempt.result {
+                    PathfindingResult::Success(path, cost) => proto::PathfindingResult {
+                        r#type: proto::pathfinding_result::ResultType::Success as i32,
+                        path: path.iter().map(|segment| segment.into()).collect(),
+                        cost: *cost,
+                        max_distance: 0.0,    // Not applicable for success
+                        actual_distance: 0.0, // Not applicable for success
+                        reason: String::new(),
+                    },
+                    PathfindingResult::TooFar(max_dist, actual_dist) => proto::PathfindingResult {
+                        r#type: proto::pathfinding_result::ResultType::TooFar as i32,
+                        path: Vec::new(),
+                        cost: 0.0,
+                        max_distance: *max_dist,
+                        actual_distance: *actual_dist,
+                        reason: format!(
+                            "Distance ({:.2}m) exceeds max limit ({:.2}m)",
+                            actual_dist, max_dist
+                        ),
+                    },
+                    PathfindingResult::NoConnection => proto::PathfindingResult {
+                        r#type: proto::pathfinding_result::ResultType::NoConnection as i32,
+                        path: Vec::new(),
+                        cost: 0.0,
+                        max_distance: 0.0,
+                        actual_distance: 0.0,
+                        reason: "Segments are not connected".to_string(),
+                    },
+                    PathfindingResult::NoPathFound(reason) => proto::PathfindingResult {
+                        r#type: proto::pathfinding_result::ResultType::NoPathFound as i32,
+                        path: Vec::new(),
+                        cost: 0.0,
+                        max_distance: 0.0,
+                        actual_distance: 0.0,
+                        reason: reason.clone(),
+                    },
+                };
+
+                proto::PathfindingAttempt {
+                    from_segment: attempt.from_segment,
+                    from_osm_way: attempt.from_osm_way,
+                    to_segment: attempt.to_segment,
+                    to_osm_way: attempt.to_osm_way,
+                    distance: attempt.distance,
+                    result: Some(result),
+                }
+            })
+            .collect();
+
+        proto::PathfindingDebugInfo {
+            start_point_idx: debug_info.start_point_idx as u32,
+            end_point_idx: debug_info.end_point_idx as u32,
+            start_candidates,
+            end_candidates,
+            constraints,
+            attempted_pairs,
+            constrained_candidates,
+            reason: debug_info.reason.clone(),
+        }
+    }
+}
+
+impl From<LatLon> for geo::Point<f64> {
+    fn from(value: LatLon) -> Self {
+        Point::new(value.lon, value.lat)
     }
 }
 

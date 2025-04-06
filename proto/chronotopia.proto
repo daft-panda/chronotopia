@@ -9,6 +9,8 @@ service Chronotopia {
     rpc GetTrips(RequestParameters) returns (Trips);
     rpc GetRouteMatchTrace(google.protobuf.Empty) returns (RouteMatchTrace);
     rpc OSMNetworkAroundPoint(LatLon) returns (google.protobuf.StringValue);
+    rpc AnalyzeSegmentConnectivity(ConnectivityRequest) returns (google.protobuf.StringValue);
+    rpc DebugWindowPathFinding(WindowDebugRequest) returns (PathfindingDebugInfo);
 }
 
 message RequestParameters {
@@ -55,15 +57,91 @@ message RoadSegment {
     repeated LatLon full_coordinates = 10;
 }
 
+message PointConstraint {
+    uint32 point_idx = 1;
+    uint64 segment_id = 2;
+    uint64 way_id = 3;
+    double distance = 4;
+}
+
 message WindowTrace {
     uint32 start = 1;
     uint32 end = 2;
     repeated RoadSegment segments = 3;
     bool bridge = 4;
+    repeated PointConstraint constraints = 5;
+    bool used_constraints = 6;
+    optional double constraint_score = 7;
+    optional double unconstrained_score = 8;
+    repeated uint64 attempted_way_ids = 9;
+    repeated string debug_notes = 10;
 }
 
 message RouteMatchTrace {
     Trip trip = 1;
     repeated WindowTrace windowTraces = 2;
     repeated google.protobuf.StringValue pointCandidates = 3;
+}
+
+message WindowDebugRequest {
+    uint32 window_index = 1;
+    uint32 start_point = 2;
+    uint32 end_point = 3;
+    optional uint64 from_segment_id = 4;
+    optional uint64 to_segment_id = 5;
+}
+
+message ConnectivityRequest {
+    optional uint32 start_point_index = 1;
+    optional uint32 end_point_index = 2;
+    optional uint64 from_segment_id = 3;
+    optional uint64 to_segment_id = 4;
+}
+
+message PathfindingDebugInfo {
+    uint32 start_point_idx = 1;
+    uint32 end_point_idx = 2;
+    repeated SegmentCandidate start_candidates = 3;
+    repeated SegmentCandidate end_candidates = 4;
+    repeated PointConstraintPair constraints = 5;
+    repeated PathfindingAttempt attempted_pairs = 6;
+    map<uint32, uint32> constrained_candidates = 7;
+    string reason = 8;
+}
+
+message SegmentCandidate {
+    RoadSegment segment = 1;
+    double distance = 2;
+    Point projection = 3;
+    double score = 4;
+}
+
+message PointConstraintPair {
+    uint32 point_idx = 1;
+    uint64 segment_id = 2;
+}
+
+message PathfindingAttempt {
+    uint64 from_segment = 1;
+    uint64 from_osm_way = 2;
+    uint64 to_segment = 3;
+    uint64 to_osm_way = 4;
+    double distance = 5;
+    PathfindingResult result = 6;
+}
+
+message PathfindingResult {
+    enum ResultType {
+        SUCCESS = 0;
+        TOO_FAR = 1;
+        NO_CONNECTION = 2;
+        NO_PATH_FOUND = 3;
+    }
+    
+    ResultType type = 1;
+    repeated RoadSegment path = 2;
+    double cost = 3;
+    double max_distance = 4;
+    double actual_distance = 5;
+    string reason = 6;
 }

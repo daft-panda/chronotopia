@@ -345,6 +345,61 @@ export class RoadSegment extends Message<RoadSegment> {
 }
 
 /**
+ * @generated from message chronotopia.PointConstraint
+ */
+export class PointConstraint extends Message<PointConstraint> {
+  /**
+   * @generated from field: uint32 point_idx = 1;
+   */
+  pointIdx = 0;
+
+  /**
+   * @generated from field: uint64 segment_id = 2;
+   */
+  segmentId = protoInt64.zero;
+
+  /**
+   * @generated from field: uint64 way_id = 3;
+   */
+  wayId = protoInt64.zero;
+
+  /**
+   * @generated from field: double distance = 4;
+   */
+  distance = 0;
+
+  constructor(data?: PartialMessage<PointConstraint>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chronotopia.PointConstraint";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "point_idx", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+    { no: 2, name: "segment_id", kind: "scalar", T: 4 /* ScalarType.UINT64 */ },
+    { no: 3, name: "way_id", kind: "scalar", T: 4 /* ScalarType.UINT64 */ },
+    { no: 4, name: "distance", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): PointConstraint {
+    return new PointConstraint().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): PointConstraint {
+    return new PointConstraint().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): PointConstraint {
+    return new PointConstraint().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: PointConstraint | PlainMessage<PointConstraint> | undefined, b: PointConstraint | PlainMessage<PointConstraint> | undefined): boolean {
+    return proto3.util.equals(PointConstraint, a, b);
+  }
+}
+
+/**
  * @generated from message chronotopia.WindowTrace
  */
 export class WindowTrace extends Message<WindowTrace> {
@@ -368,6 +423,36 @@ export class WindowTrace extends Message<WindowTrace> {
    */
   bridge = false;
 
+  /**
+   * @generated from field: repeated chronotopia.PointConstraint constraints = 5;
+   */
+  constraints: PointConstraint[] = [];
+
+  /**
+   * @generated from field: bool used_constraints = 6;
+   */
+  usedConstraints = false;
+
+  /**
+   * @generated from field: optional double constraint_score = 7;
+   */
+  constraintScore?: number;
+
+  /**
+   * @generated from field: optional double unconstrained_score = 8;
+   */
+  unconstrainedScore?: number;
+
+  /**
+   * @generated from field: repeated uint64 attempted_way_ids = 9;
+   */
+  attemptedWayIds: bigint[] = [];
+
+  /**
+   * @generated from field: repeated string debug_notes = 10;
+   */
+  debugNotes: string[] = [];
+
   constructor(data?: PartialMessage<WindowTrace>) {
     super();
     proto3.util.initPartial(data, this);
@@ -380,6 +465,12 @@ export class WindowTrace extends Message<WindowTrace> {
     { no: 2, name: "end", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
     { no: 3, name: "segments", kind: "message", T: RoadSegment, repeated: true },
     { no: 4, name: "bridge", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 5, name: "constraints", kind: "message", T: PointConstraint, repeated: true },
+    { no: 6, name: "used_constraints", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 7, name: "constraint_score", kind: "scalar", T: 1 /* ScalarType.DOUBLE */, opt: true },
+    { no: 8, name: "unconstrained_score", kind: "scalar", T: 1 /* ScalarType.DOUBLE */, opt: true },
+    { no: 9, name: "attempted_way_ids", kind: "scalar", T: 4 /* ScalarType.UINT64 */, repeated: true },
+    { no: 10, name: "debug_notes", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WindowTrace {
@@ -447,4 +538,463 @@ export class RouteMatchTrace extends Message<RouteMatchTrace> {
     return proto3.util.equals(RouteMatchTrace, a, b);
   }
 }
+
+/**
+ * @generated from message chronotopia.WindowDebugRequest
+ */
+export class WindowDebugRequest extends Message<WindowDebugRequest> {
+  /**
+   * @generated from field: uint32 window_index = 1;
+   */
+  windowIndex = 0;
+
+  /**
+   * @generated from field: uint32 start_point = 2;
+   */
+  startPoint = 0;
+
+  /**
+   * @generated from field: uint32 end_point = 3;
+   */
+  endPoint = 0;
+
+  /**
+   * @generated from field: optional uint64 from_segment_id = 4;
+   */
+  fromSegmentId?: bigint;
+
+  /**
+   * @generated from field: optional uint64 to_segment_id = 5;
+   */
+  toSegmentId?: bigint;
+
+  constructor(data?: PartialMessage<WindowDebugRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chronotopia.WindowDebugRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "window_index", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+    { no: 2, name: "start_point", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+    { no: 3, name: "end_point", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+    { no: 4, name: "from_segment_id", kind: "scalar", T: 4 /* ScalarType.UINT64 */, opt: true },
+    { no: 5, name: "to_segment_id", kind: "scalar", T: 4 /* ScalarType.UINT64 */, opt: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WindowDebugRequest {
+    return new WindowDebugRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): WindowDebugRequest {
+    return new WindowDebugRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): WindowDebugRequest {
+    return new WindowDebugRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: WindowDebugRequest | PlainMessage<WindowDebugRequest> | undefined, b: WindowDebugRequest | PlainMessage<WindowDebugRequest> | undefined): boolean {
+    return proto3.util.equals(WindowDebugRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message chronotopia.ConnectivityRequest
+ */
+export class ConnectivityRequest extends Message<ConnectivityRequest> {
+  /**
+   * @generated from field: optional uint32 start_point_index = 1;
+   */
+  startPointIndex?: number;
+
+  /**
+   * @generated from field: optional uint32 end_point_index = 2;
+   */
+  endPointIndex?: number;
+
+  /**
+   * @generated from field: optional uint64 from_segment_id = 3;
+   */
+  fromSegmentId?: bigint;
+
+  /**
+   * @generated from field: optional uint64 to_segment_id = 4;
+   */
+  toSegmentId?: bigint;
+
+  constructor(data?: PartialMessage<ConnectivityRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chronotopia.ConnectivityRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "start_point_index", kind: "scalar", T: 13 /* ScalarType.UINT32 */, opt: true },
+    { no: 2, name: "end_point_index", kind: "scalar", T: 13 /* ScalarType.UINT32 */, opt: true },
+    { no: 3, name: "from_segment_id", kind: "scalar", T: 4 /* ScalarType.UINT64 */, opt: true },
+    { no: 4, name: "to_segment_id", kind: "scalar", T: 4 /* ScalarType.UINT64 */, opt: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ConnectivityRequest {
+    return new ConnectivityRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ConnectivityRequest {
+    return new ConnectivityRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ConnectivityRequest {
+    return new ConnectivityRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ConnectivityRequest | PlainMessage<ConnectivityRequest> | undefined, b: ConnectivityRequest | PlainMessage<ConnectivityRequest> | undefined): boolean {
+    return proto3.util.equals(ConnectivityRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message chronotopia.PathfindingDebugInfo
+ */
+export class PathfindingDebugInfo extends Message<PathfindingDebugInfo> {
+  /**
+   * @generated from field: uint32 start_point_idx = 1;
+   */
+  startPointIdx = 0;
+
+  /**
+   * @generated from field: uint32 end_point_idx = 2;
+   */
+  endPointIdx = 0;
+
+  /**
+   * @generated from field: repeated chronotopia.SegmentCandidate start_candidates = 3;
+   */
+  startCandidates: SegmentCandidate[] = [];
+
+  /**
+   * @generated from field: repeated chronotopia.SegmentCandidate end_candidates = 4;
+   */
+  endCandidates: SegmentCandidate[] = [];
+
+  /**
+   * @generated from field: repeated chronotopia.PointConstraintPair constraints = 5;
+   */
+  constraints: PointConstraintPair[] = [];
+
+  /**
+   * @generated from field: repeated chronotopia.PathfindingAttempt attempted_pairs = 6;
+   */
+  attemptedPairs: PathfindingAttempt[] = [];
+
+  /**
+   * @generated from field: map<uint32, uint32> constrained_candidates = 7;
+   */
+  constrainedCandidates: { [key: number]: number } = {};
+
+  /**
+   * @generated from field: string reason = 8;
+   */
+  reason = "";
+
+  constructor(data?: PartialMessage<PathfindingDebugInfo>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chronotopia.PathfindingDebugInfo";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "start_point_idx", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+    { no: 2, name: "end_point_idx", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+    { no: 3, name: "start_candidates", kind: "message", T: SegmentCandidate, repeated: true },
+    { no: 4, name: "end_candidates", kind: "message", T: SegmentCandidate, repeated: true },
+    { no: 5, name: "constraints", kind: "message", T: PointConstraintPair, repeated: true },
+    { no: 6, name: "attempted_pairs", kind: "message", T: PathfindingAttempt, repeated: true },
+    { no: 7, name: "constrained_candidates", kind: "map", K: 13 /* ScalarType.UINT32 */, V: {kind: "scalar", T: 13 /* ScalarType.UINT32 */} },
+    { no: 8, name: "reason", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): PathfindingDebugInfo {
+    return new PathfindingDebugInfo().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): PathfindingDebugInfo {
+    return new PathfindingDebugInfo().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): PathfindingDebugInfo {
+    return new PathfindingDebugInfo().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: PathfindingDebugInfo | PlainMessage<PathfindingDebugInfo> | undefined, b: PathfindingDebugInfo | PlainMessage<PathfindingDebugInfo> | undefined): boolean {
+    return proto3.util.equals(PathfindingDebugInfo, a, b);
+  }
+}
+
+/**
+ * @generated from message chronotopia.SegmentCandidate
+ */
+export class SegmentCandidate extends Message<SegmentCandidate> {
+  /**
+   * @generated from field: chronotopia.RoadSegment segment = 1;
+   */
+  segment?: RoadSegment;
+
+  /**
+   * @generated from field: double distance = 2;
+   */
+  distance = 0;
+
+  /**
+   * @generated from field: chronotopia.Point projection = 3;
+   */
+  projection?: Point;
+
+  /**
+   * @generated from field: double score = 4;
+   */
+  score = 0;
+
+  constructor(data?: PartialMessage<SegmentCandidate>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chronotopia.SegmentCandidate";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "segment", kind: "message", T: RoadSegment },
+    { no: 2, name: "distance", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
+    { no: 3, name: "projection", kind: "message", T: Point },
+    { no: 4, name: "score", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SegmentCandidate {
+    return new SegmentCandidate().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SegmentCandidate {
+    return new SegmentCandidate().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SegmentCandidate {
+    return new SegmentCandidate().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SegmentCandidate | PlainMessage<SegmentCandidate> | undefined, b: SegmentCandidate | PlainMessage<SegmentCandidate> | undefined): boolean {
+    return proto3.util.equals(SegmentCandidate, a, b);
+  }
+}
+
+/**
+ * @generated from message chronotopia.PointConstraintPair
+ */
+export class PointConstraintPair extends Message<PointConstraintPair> {
+  /**
+   * @generated from field: uint32 point_idx = 1;
+   */
+  pointIdx = 0;
+
+  /**
+   * @generated from field: uint64 segment_id = 2;
+   */
+  segmentId = protoInt64.zero;
+
+  constructor(data?: PartialMessage<PointConstraintPair>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chronotopia.PointConstraintPair";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "point_idx", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+    { no: 2, name: "segment_id", kind: "scalar", T: 4 /* ScalarType.UINT64 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): PointConstraintPair {
+    return new PointConstraintPair().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): PointConstraintPair {
+    return new PointConstraintPair().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): PointConstraintPair {
+    return new PointConstraintPair().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: PointConstraintPair | PlainMessage<PointConstraintPair> | undefined, b: PointConstraintPair | PlainMessage<PointConstraintPair> | undefined): boolean {
+    return proto3.util.equals(PointConstraintPair, a, b);
+  }
+}
+
+/**
+ * @generated from message chronotopia.PathfindingAttempt
+ */
+export class PathfindingAttempt extends Message<PathfindingAttempt> {
+  /**
+   * @generated from field: uint64 from_segment = 1;
+   */
+  fromSegment = protoInt64.zero;
+
+  /**
+   * @generated from field: uint64 from_osm_way = 2;
+   */
+  fromOsmWay = protoInt64.zero;
+
+  /**
+   * @generated from field: uint64 to_segment = 3;
+   */
+  toSegment = protoInt64.zero;
+
+  /**
+   * @generated from field: uint64 to_osm_way = 4;
+   */
+  toOsmWay = protoInt64.zero;
+
+  /**
+   * @generated from field: double distance = 5;
+   */
+  distance = 0;
+
+  /**
+   * @generated from field: chronotopia.PathfindingResult result = 6;
+   */
+  result?: PathfindingResult;
+
+  constructor(data?: PartialMessage<PathfindingAttempt>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chronotopia.PathfindingAttempt";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "from_segment", kind: "scalar", T: 4 /* ScalarType.UINT64 */ },
+    { no: 2, name: "from_osm_way", kind: "scalar", T: 4 /* ScalarType.UINT64 */ },
+    { no: 3, name: "to_segment", kind: "scalar", T: 4 /* ScalarType.UINT64 */ },
+    { no: 4, name: "to_osm_way", kind: "scalar", T: 4 /* ScalarType.UINT64 */ },
+    { no: 5, name: "distance", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
+    { no: 6, name: "result", kind: "message", T: PathfindingResult },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): PathfindingAttempt {
+    return new PathfindingAttempt().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): PathfindingAttempt {
+    return new PathfindingAttempt().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): PathfindingAttempt {
+    return new PathfindingAttempt().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: PathfindingAttempt | PlainMessage<PathfindingAttempt> | undefined, b: PathfindingAttempt | PlainMessage<PathfindingAttempt> | undefined): boolean {
+    return proto3.util.equals(PathfindingAttempt, a, b);
+  }
+}
+
+/**
+ * @generated from message chronotopia.PathfindingResult
+ */
+export class PathfindingResult extends Message<PathfindingResult> {
+  /**
+   * @generated from field: chronotopia.PathfindingResult.ResultType type = 1;
+   */
+  type = PathfindingResult_ResultType.SUCCESS;
+
+  /**
+   * @generated from field: repeated chronotopia.RoadSegment path = 2;
+   */
+  path: RoadSegment[] = [];
+
+  /**
+   * @generated from field: double cost = 3;
+   */
+  cost = 0;
+
+  /**
+   * @generated from field: double max_distance = 4;
+   */
+  maxDistance = 0;
+
+  /**
+   * @generated from field: double actual_distance = 5;
+   */
+  actualDistance = 0;
+
+  /**
+   * @generated from field: string reason = 6;
+   */
+  reason = "";
+
+  constructor(data?: PartialMessage<PathfindingResult>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chronotopia.PathfindingResult";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "type", kind: "enum", T: proto3.getEnumType(PathfindingResult_ResultType) },
+    { no: 2, name: "path", kind: "message", T: RoadSegment, repeated: true },
+    { no: 3, name: "cost", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
+    { no: 4, name: "max_distance", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
+    { no: 5, name: "actual_distance", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
+    { no: 6, name: "reason", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): PathfindingResult {
+    return new PathfindingResult().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): PathfindingResult {
+    return new PathfindingResult().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): PathfindingResult {
+    return new PathfindingResult().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: PathfindingResult | PlainMessage<PathfindingResult> | undefined, b: PathfindingResult | PlainMessage<PathfindingResult> | undefined): boolean {
+    return proto3.util.equals(PathfindingResult, a, b);
+  }
+}
+
+/**
+ * @generated from enum chronotopia.PathfindingResult.ResultType
+ */
+export enum PathfindingResult_ResultType {
+  /**
+   * @generated from enum value: SUCCESS = 0;
+   */
+  SUCCESS = 0,
+
+  /**
+   * @generated from enum value: TOO_FAR = 1;
+   */
+  TOO_FAR = 1,
+
+  /**
+   * @generated from enum value: NO_CONNECTION = 2;
+   */
+  NO_CONNECTION = 2,
+
+  /**
+   * @generated from enum value: NO_PATH_FOUND = 3;
+   */
+  NO_PATH_FOUND = 3,
+}
+// Retrieve enum metadata with: proto3.getEnumType(PathfindingResult_ResultType)
+proto3.util.setEnumType(PathfindingResult_ResultType, "chronotopia.PathfindingResult.ResultType", [
+  { no: 0, name: "SUCCESS" },
+  { no: 1, name: "TOO_FAR" },
+  { no: 2, name: "NO_CONNECTION" },
+  { no: 3, name: "NO_PATH_FOUND" },
+]);
 
