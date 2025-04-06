@@ -57,6 +57,7 @@ async fn main() -> Result<()> {
         },
         max_candidates_per_point: 10,
         max_tiles_per_depth: 100,
+        split_windows_on_failure: false,
     };
 
     // Create route matcher
@@ -240,7 +241,6 @@ impl ChronotopiaService {
 
         match route_matcher.match_trace(&mut job) {
             Ok(result) => {
-                println!("{}", job.get_matching_explanation());
                 self.successful_matches += 1;
                 info!(
                     "Map matching successful: {} segments matched ({}/{})",
@@ -423,128 +423,29 @@ impl ChronotopiaService {
     }
 }
 
-// Update the road_segments_to_geojson function in main.rs to include OSM way ID
+// Generate a GeoJSON based of the matched route
 pub fn road_segments_to_geojson(segments: &[MatchedWaySegment]) -> serde_json::Value {
     let mut features = Vec::new();
 
     // Helper to convert geo::Coord to GeoJSON format
     let coord_to_json = |c: &Coord<f64>| vec![c.x, c.y];
 
-    // Add each segment as an individual feature
-    for (i, matched_segment) in segments.iter().enumerate() {
-        let segment = &matched_segment.segment;
+    // Create the combined route - a simple concatenation of all segment coordinates
+    let mut combined_coords = Vec::new();
 
-        // Get the actual coordinates considering interim points
-        let actual_coords = matched_segment.coordinates();
-        if actual_coords.is_empty() {
-            continue;
-        }
-
-        // Get the actual nodes
-        let actual_nodes = matched_segment.nodes();
-
-        // Start and end indices
-        let start_idx = matched_segment.interim_start_idx.unwrap_or(0);
-        let end_idx = matched_segment
-            .interim_end_idx
-            .unwrap_or(segment.coordinates.len() - 1);
-
-        // Segment coordinates
-        let segment_coords: Vec<Vec<f64>> = actual_coords.iter().map(coord_to_json).collect();
-
-        // Add feature with segment information
-        features.push(json!({
-            "type": "Feature",
-            "properties": {
-                "segment_id": segment.id,
-                "osm_way_id": segment.osm_way_id,
-                "start_idx": start_idx,
-                "end_idx": end_idx,
-                "orig_nodes": segment.nodes.len(),
-                "used_nodes": actual_nodes.len(),
-                "order": i,
-                "description": format!("ID: {} (OSM: {}), Using nodes {}-{} of {}",
-                    segment.id,
-                    segment.osm_way_id,
-                    start_idx,
-                    end_idx,
-                    segment.nodes.len()
-                )
-            },
-            "geometry": {
-                "type": "LineString",
-                "coordinates": segment_coords
-            }
-        }));
-    }
-
-    // Create a combined route ensuring no gaps between segments
-    let mut coordinates = Vec::new();
-
-    for (i, matched_segment) in segments.iter().enumerate() {
-        let actual_coords = matched_segment.coordinates();
-        if actual_coords.is_empty() {
-            continue;
-        }
-
-        // For first segment, add all points
-        if i == 0 {
-            coordinates.extend(actual_coords.iter().map(coord_to_json));
-            continue;
-        }
-
-        // Get previous segment's coordinates
-        let prev_actual_coords = segments[i - 1].coordinates();
-        if prev_actual_coords.is_empty() {
-            coordinates.extend(actual_coords.iter().map(coord_to_json));
-            continue;
-        }
-
-        // Check if segments connect properly
-        let prev_last = prev_actual_coords.last().unwrap();
-        let curr_first = actual_coords.first().unwrap();
-
-        // Calculate distance between end of previous and start of current
-        let distance =
-            ((prev_last.x - curr_first.x).powi(2) + (prev_last.y - curr_first.y).powi(2)).sqrt();
-
-        // If there's a small gap, add an explicit connection
-        if distance > 0.0001 && distance < 50.0 {
-            coordinates.push(vec![curr_first.x, curr_first.y]);
-        }
-
-        // Add all points of current segment
-        coordinates.extend(actual_coords.iter().map(coord_to_json));
-    }
-
-    // Add junction points as a separate feature
-    let mut junction_points = Vec::new();
-    for i in 0..segments.len() - 1 {
-        if let (Some(end_node), Some(start_node)) =
-            (segments[i].end_node(), segments[i + 1].start_node())
-        {
-            if end_node == start_node {
-                // This is a junction point
-                if let Some(coord) = segments[i].segment.coordinates.last() {
-                    junction_points.push(json!({
-                        "type": "Feature",
-                        "properties": {
-                            "type": "junction",
-                            "node_id": end_node
-                        },
-                        "geometry": {
-                            "type": "Point",
-                            "coordinates": [coord.x, coord.y]
-                        }
-                    }));
-                }
+    // Collect all coordinates from all segments in sequence
+    for matched_segment in segments {
+        let coords = matched_segment.coordinates();
+        if !coords.is_empty() {
+            // Simply add all coordinates from this segment
+            for coord in &coords {
+                combined_coords.push(coord_to_json(coord));
             }
         }
     }
-    features.extend(junction_points);
 
-    // Add main route feature
-    let main_feature = json!({
+    // Create the main route feature
+    let main_route = json!({
         "type": "Feature",
         "properties": {
             "type": "matched_route",
@@ -554,13 +455,46 @@ pub fn road_segments_to_geojson(segments: &[MatchedWaySegment]) -> serde_json::V
         },
         "geometry": {
             "type": "LineString",
-            "coordinates": coordinates
+            "coordinates": combined_coords
         }
     });
 
-    // Add main route first, then individual segments
-    features.insert(0, main_feature);
+    // Add the combined route as the first feature
+    features.insert(0, main_route);
 
+    // Add junction points as separate features for reference
+    let mut junction_points = Vec::new();
+
+    if segments.len() > 1 {
+        for i in 0..segments.len() - 1 {
+            if let (Some(end_node), Some(start_node)) =
+                (segments[i].end_node(), segments[i + 1].start_node())
+            {
+                if end_node == start_node {
+                    // This is a junction point
+                    let coords = segments[i].coordinates();
+                    if let Some(coord) = coords.last() {
+                        junction_points.push(json!({
+                            "type": "Feature",
+                            "properties": {
+                                "type": "junction",
+                                "node_id": end_node
+                            },
+                            "geometry": {
+                                "type": "Point",
+                                "coordinates": [coord.x, coord.y]
+                            }
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    // Add junction points to features
+    features.extend(junction_points);
+
+    // Return the complete GeoJSON
     json!({
         "type": "FeatureCollection",
         "features": features
@@ -991,8 +925,8 @@ impl From<&MatchedWaySegment> for proto::RoadSegment {
             highway_type: segment.highway_type.clone(),
             connections: segment.connections.clone(),
             name: segment.name.clone(),
-            interim_start_idx: matched_segment.interim_start_idx.map(|idx| idx as u32),
-            interim_end_idx: matched_segment.interim_end_idx.map(|idx| idx as u32),
+            interim_start_idx: matched_segment.entry_node.map(|idx| idx as u32),
+            interim_end_idx: matched_segment.exit_node.map(|idx| idx as u32),
             full_coordinates: full_coords,
         }
     }

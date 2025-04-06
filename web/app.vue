@@ -145,31 +145,33 @@
                 <div class="grid grid-cols-4 gap-2">
                   <div class="bg-green-100 p-2 rounded text-center">
                     <div class="font-bold text-green-800">
-                      {{pathDebugInfo.attemptedPairs.filter(p => p.result.type === 'Success').length}}
+                      {{pathDebugInfo.attemptedPairs.filter(p => p.result!.type ===
+                        PathfindingResult_ResultType.SUCCESS).length}}
                     </div>
                     <div class="text-xs">Successful</div>
                   </div>
                   <div class="bg-yellow-100 p-2 rounded text-center">
                     <div class="font-bold text-yellow-800">
-                      {{pathDebugInfo.attemptedPairs.filter(p => p.result.type === 'TooFar').length}}
+                      {{pathDebugInfo.attemptedPairs.filter(p => p.result!.type ===
+                        PathfindingResult_ResultType.TOO_FAR).length}}
                     </div>
                     <div class="text-xs">Too Far</div>
                   </div>
                   <div class="bg-red-100 p-2 rounded text-center">
                     <div class="font-bold text-red-800">
-                      {{pathDebugInfo.attemptedPairs.filter(p => p.result.type === 'NoConnection').length}}
+                      {{pathDebugInfo.attemptedPairs.filter(p => p.result!.type ===
+                        PathfindingResult_ResultType.NO_CONNECTION).length}}
                     </div>
                     <div class="text-xs">No Connection</div>
                   </div>
                   <div class="bg-gray-200 p-2 rounded text-center">
                     <div class="font-bold text-gray-800">
                       {{pathDebugInfo.attemptedPairs.filter(p =>
-                        p.result.type !== 'Success' &&
-                        p.result.type !== 'TooFar' &&
-                        p.result.type !== 'NoConnection'
+                        p.result!.type !== PathfindingResult_ResultType.SUCCESS &&
+                        p.result!.type !== PathfindingResult_ResultType.TOO_FAR &&
+                        p.result!.type !== PathfindingResult_ResultType.NO_CONNECTION
                       ).length}}
                     </div>
-                    <div class="text-xs">Other Errors</div>
                   </div>
                 </div>
               </div>
@@ -195,17 +197,17 @@
                     <span>{{ getSegmentLabel(Number(attempt.fromSegment)) }} → {{
                       getSegmentLabel(Number(attempt.toSegment))
                     }}</span>
-                    <span class="font-medium">{{ getResultLabel(attempt.result) }}</span>
+                    <span class="font-medium">{{ getResultLabel(attempt.result!) }}</span>
                   </div>
                   <div class="text-xs">Distance: {{ attempt.distance.toFixed(2) }}m</div>
 
-                  <div v-if="attempt.result.type === 'TooFar'">
+                  <div v-if="attempt.result!.type === PathfindingResult_ResultType.TOO_FAR">
                     <div class="text-xs">
                       Max allowed: {{ attempt.result?.maxDistance.toFixed(2) }}m
                     </div>
                   </div>
 
-                  <div v-if="attempt.result.type === 'NoPathFound'">
+                  <div v-if="attempt.result!.type === PathfindingResult_ResultType.NO_PATH_FOUND">
                     <div class="text-xs text-red-500">
                       Error: {{ attempt.result?.reason }}
                     </div>
@@ -332,7 +334,7 @@
 </template>
 
 <script lang="ts" setup>
-import type { Point, WindowTrace, RoadSegment, PathfindingDebugInfo } from './model/chronotopia_pb';
+import { type Point, type WindowTrace, type RoadSegment, type PathfindingDebugInfo, PathfindingResult_ResultType, PathfindingResult, PathfindingAttempt } from './model/chronotopia_pb';
 import { type Map, Popup, type LineLayerSpecification, type LngLatLike } from 'maplibre-gl';
 import { MglFullscreenControl, MglGeolocateControl, MglMap, MglMarker, MglNavigationControl } from '#components';
 import type { Feature, GeoJSON, GeoJsonProperties, Geometry } from 'geojson';
@@ -891,8 +893,8 @@ const visualizeConnectivity = async () => {
 
   // Get connectivity visualization
   const connectivityData = await $api.analyzeSegmentConnectivity({
-    startPoint: selectedWindow.value.start,
-    endPoint: selectedWindow.value.end
+    startPointIndex: selectedWindow.value.start,
+    endPointIndex: selectedWindow.value.end
   });
 
   // Update the debug GeoJSON source to show the connectivity
@@ -900,21 +902,21 @@ const visualizeConnectivity = async () => {
 };
 
 // Helper methods
-const getAttemptClass = (attempt) => {
-  switch (attempt.result.type) {
-    case 'Success': return 'bg-green-100';
-    case 'TooFar': return 'bg-yellow-100';
-    case 'NoConnection': return 'bg-red-100';
+const getAttemptClass = (attempt: PathfindingAttempt) => {
+  switch (attempt.result!.type) {
+    case PathfindingResult_ResultType.SUCCESS: return 'bg-green-100';
+    case PathfindingResult_ResultType.TOO_FAR: return 'bg-yellow-100';
+    case PathfindingResult_ResultType.NO_CONNECTION: return 'bg-red-100';
     default: return 'bg-gray-100';
   }
 };
 
-const getResultLabel = (result) => {
+const getResultLabel = (result: PathfindingResult) => {
   switch (result.type) {
-    case 'Success': return 'Success';
-    case 'TooFar': return 'Too Far';
-    case 'NoConnection': return 'No Connection';
-    case 'NoPathFound': return 'Path Error';
+    case PathfindingResult_ResultType.SUCCESS: return 'Success';
+    case PathfindingResult_ResultType.TOO_FAR: return 'Too Far';
+    case PathfindingResult_ResultType.NO_CONNECTION: return 'No Connection';
+    case PathfindingResult_ResultType.NO_PATH_FOUND: return 'Path Error';
     default: return 'Unknown';
   }
 };
@@ -1515,6 +1517,7 @@ border .window-button.unconstrained-bridge::after {
 
 .attempt {
   border-left: 3px solid transparent;
+  padding-left: 5px;
 }
 
 .attempt.bg-green-100 {
