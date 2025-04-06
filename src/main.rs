@@ -617,7 +617,7 @@ impl Chronotopia for ChronotopiaService {
 
         // Find candidate segments for all points
         route_matcher
-            .find_all_candidate_segments(&job, loaded_tiles)
+            .find_all_candidate_segments(&job, &loaded_tiles)
             .unwrap();
 
         // Generate detailed debug info for this window
@@ -669,7 +669,7 @@ impl Chronotopia for ChronotopiaService {
 
             // Find candidate segments for all points
             route_matcher
-                .find_all_candidate_segments(&job, loaded_tiles)
+                .find_all_candidate_segments(&job, &loaded_tiles)
                 .unwrap();
 
             // Generate connectivity visualization
@@ -1008,7 +1008,7 @@ impl From<PathfindingDebugInfo> for proto::PathfindingDebugInfo {
                     note: None,
                     elevation: None,
                 }),
-                score: candidate.score,
+                score: candidate.cost,
             })
             .collect();
 
@@ -1029,7 +1029,7 @@ impl From<PathfindingDebugInfo> for proto::PathfindingDebugInfo {
                     note: None,
                     elevation: None,
                 }),
-                score: candidate.score,
+                score: candidate.cost,
             })
             .collect();
 
