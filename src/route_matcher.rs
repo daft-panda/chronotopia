@@ -303,6 +303,18 @@ impl RouteMatchJob {
             matched.exit_node = Some(closest_idx);
         }
 
+        // Ensure direction constraints for one-way roads
+        if segment.is_oneway {
+            // Check if both entry and exit are set
+            if let (Some(entry), Some(exit)) = (matched.entry_node, matched.exit_node) {
+                if entry > exit {
+                    // Invalid direction for one-way road, adjust to forward traversal
+                    matched.entry_node = Some(entry.min(exit));
+                    matched.exit_node = Some(exit.max(entry));
+                }
+            }
+        }
+
         matched
     }
 }
@@ -380,12 +392,23 @@ impl MatchedWaySegment {
             );
         }
 
-        // Handle both forward and reverse direction correctly
-        if entry_idx <= exit_idx {
+        // For one-way roads, ensure forward traversal
+        if self.segment.is_oneway && entry_idx > exit_idx {
+            // This should never happen if validation is properly applied elsewhere
+            // But as a safeguard, handle it here too
+            if entry_idx <= exit_idx {
+                // Forward direction (correct for one-way)
+                self.segment.coordinates[entry_idx..=exit_idx].to_vec()
+            } else {
+                // For one-way roads, we should not traverse backward
+                // Return forward path from start to end of segment
+                self.segment.coordinates.to_vec()
+            }
+        } else if entry_idx <= exit_idx {
             // Forward direction
             self.segment.coordinates[entry_idx..=exit_idx].to_vec()
         } else {
-            // Reverse direction
+            // Reverse direction (only allowed for bidirectional roads)
             let mut reversed = Vec::with_capacity(entry_idx - exit_idx + 1);
             for i in (exit_idx..=entry_idx).rev() {
                 reversed.push(self.segment.coordinates[i]);
@@ -445,6 +468,22 @@ impl MatchedWaySegment {
         let count = coords.len() as f64;
 
         Point::new(sum_x / count, sum_y / count)
+    }
+
+    /// Validate and adjust indices for one-way segments if needed
+    pub fn validate_direction(&mut self) -> bool {
+        if !self.segment.is_oneway {
+            return true; // No need to validate bidirectional roads
+        }
+
+        // For one-way roads, entry_node must be <= exit_node to ensure forward travel
+        if let (Some(entry), Some(exit)) = (self.entry_node, self.exit_node) {
+            if entry > exit {
+                return false; // Invalid direction for a one-way road
+            }
+        }
+
+        true
     }
 }
 
@@ -3315,8 +3354,22 @@ impl RouteMatcher {
                         .position(|&n| n == connection_node)
                     {
                         matched_first.exit_node = Some(node_idx);
+
+                        // For one-way roads, ensure we're going in the correct direction
+                        if first_segment.is_oneway && closest_idx > node_idx {
+                            // Cannot traverse one-way road backward
+                            // Adjust the entry point to ensure forward motion
+                            matched_first.entry_node = Some(0);
+                        }
                     }
                 }
+            }
+
+            // Validate the direction for one-way roads
+            if !matched_first.validate_direction() && first_segment.is_oneway {
+                // For one-way roads, ensure forward traversal
+                matched_first.entry_node = Some(0);
+                matched_first.exit_node = Some(matched_first.segment.nodes.len() - 1);
             }
 
             matched_path.push(matched_first);
@@ -3349,6 +3402,20 @@ impl RouteMatcher {
                     .position(|&n| n == next_connection)
                 {
                     matched_middle.exit_node = Some(end_idx);
+                }
+            }
+
+            // Check one-way direction constraints
+            if curr_segment.is_oneway {
+                if let (Some(entry), Some(exit)) =
+                    (matched_middle.entry_node, matched_middle.exit_node)
+                {
+                    if entry > exit {
+                        // Cannot go backwards on a one-way road
+                        // Set to traverse the entire segment in the forward direction
+                        matched_middle.entry_node = Some(0);
+                        matched_middle.exit_node = Some(curr_segment.nodes.len() - 1);
+                    }
                 }
             }
 
@@ -3389,6 +3456,24 @@ impl RouteMatcher {
 
                 // Set end index (we're exiting the segment here)
                 matched_last.exit_node = Some(closest_idx);
+
+                // For one-way roads, ensure valid traversal direction
+                if last_segment.is_oneway {
+                    if let Some(entry) = matched_last.entry_node {
+                        if entry > closest_idx {
+                            // Cannot go backwards on a one-way, adjust exit point
+                            matched_last.exit_node = Some(last_segment.nodes.len() - 1);
+                        }
+                    }
+                }
+
+                // Final validation
+                if !matched_last.validate_direction() && last_segment.is_oneway {
+                    // For one-way roads, force forward traversal if invalid
+                    matched_last.entry_node = Some(0);
+                    matched_last.exit_node = Some(last_segment.nodes.len() - 1);
+                }
+
                 matched_path.push(matched_last);
             }
         }
@@ -3428,6 +3513,15 @@ impl RouteMatcher {
             }
 
             matched.exit_node = Some(closest_end_idx);
+
+            // For one-way roads, ensure forward traversal
+            if segment.is_oneway && closest_start_idx > closest_end_idx {
+                // Swap to ensure forward motion - this isn't ideal but preserves the
+                // intent to match these specific projections while respecting one-way
+                matched.entry_node = Some(0);
+                matched.exit_node = Some(segment.nodes.len() - 1);
+            }
+
             matched_path.push(matched);
         }
 
