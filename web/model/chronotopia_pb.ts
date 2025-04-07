@@ -7,6 +7,44 @@ import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialM
 import { Message, proto3, protoInt64, StringValue, Timestamp } from "@bufbuild/protobuf";
 
 /**
+ * @generated from enum chronotopia.MapMatchingStatus
+ */
+export enum MapMatchingStatus {
+  /**
+   * @generated from enum value: UNKNOWN = 0;
+   */
+  UNKNOWN = 0,
+
+  /**
+   * @generated from enum value: PENDING = 1;
+   */
+  PENDING = 1,
+
+  /**
+   * @generated from enum value: PROCESSING = 2;
+   */
+  PROCESSING = 2,
+
+  /**
+   * @generated from enum value: COMPLETED = 3;
+   */
+  COMPLETED = 3,
+
+  /**
+   * @generated from enum value: FAILED = 4;
+   */
+  FAILED = 4,
+}
+// Retrieve enum metadata with: proto3.getEnumType(MapMatchingStatus)
+proto3.util.setEnumType(MapMatchingStatus, "chronotopia.MapMatchingStatus", [
+  { no: 0, name: "UNKNOWN" },
+  { no: 1, name: "PENDING" },
+  { no: 2, name: "PROCESSING" },
+  { no: 3, name: "COMPLETED" },
+  { no: 4, name: "FAILED" },
+]);
+
+/**
  * @generated from message chronotopia.RequestParameters
  */
 export class RequestParameters extends Message<RequestParameters> {
@@ -248,6 +286,263 @@ export class Trips extends Message<Trips> {
 
   static equals(a: Trips | PlainMessage<Trips> | undefined, b: Trips | PlainMessage<Trips> | undefined): boolean {
     return proto3.util.equals(Trips, a, b);
+  }
+}
+
+/**
+ * @generated from message chronotopia.TripSummary
+ */
+export class TripSummary extends Message<TripSummary> {
+  /**
+   * @generated from field: uint32 index = 1;
+   */
+  index = 0;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp start = 2;
+   */
+  start?: Timestamp;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp end = 3;
+   */
+  end?: Timestamp;
+
+  /**
+   * @generated from field: uint32 point_count = 4;
+   */
+  pointCount = 0;
+
+  /**
+   * @generated from field: chronotopia.MapMatchingStatus status = 5;
+   */
+  status = MapMatchingStatus.UNKNOWN;
+
+  /**
+   * @generated from field: int64 duration_seconds = 6;
+   */
+  durationSeconds = protoInt64.zero;
+
+  /**
+   * @generated from field: double distance_meters = 7;
+   */
+  distanceMeters = 0;
+
+  /**
+   * @generated from field: chronotopia.LatLon start_point = 8;
+   */
+  startPoint?: LatLon;
+
+  /**
+   * @generated from field: chronotopia.LatLon end_point = 9;
+   */
+  endPoint?: LatLon;
+
+  /**
+   * @generated from field: uint32 matched_segment_count = 10;
+   */
+  matchedSegmentCount = 0;
+
+  constructor(data?: PartialMessage<TripSummary>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chronotopia.TripSummary";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "index", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+    { no: 2, name: "start", kind: "message", T: Timestamp },
+    { no: 3, name: "end", kind: "message", T: Timestamp },
+    { no: 4, name: "point_count", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+    { no: 5, name: "status", kind: "enum", T: proto3.getEnumType(MapMatchingStatus) },
+    { no: 6, name: "duration_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 7, name: "distance_meters", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
+    { no: 8, name: "start_point", kind: "message", T: LatLon },
+    { no: 9, name: "end_point", kind: "message", T: LatLon },
+    { no: 10, name: "matched_segment_count", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): TripSummary {
+    return new TripSummary().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): TripSummary {
+    return new TripSummary().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): TripSummary {
+    return new TripSummary().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: TripSummary | PlainMessage<TripSummary> | undefined, b: TripSummary | PlainMessage<TripSummary> | undefined): boolean {
+    return proto3.util.equals(TripSummary, a, b);
+  }
+}
+
+/**
+ * @generated from message chronotopia.TripSummaries
+ */
+export class TripSummaries extends Message<TripSummaries> {
+  /**
+   * @generated from field: repeated chronotopia.TripSummary summaries = 1;
+   */
+  summaries: TripSummary[] = [];
+
+  constructor(data?: PartialMessage<TripSummaries>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chronotopia.TripSummaries";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "summaries", kind: "message", T: TripSummary, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): TripSummaries {
+    return new TripSummaries().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): TripSummaries {
+    return new TripSummaries().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): TripSummaries {
+    return new TripSummaries().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: TripSummaries | PlainMessage<TripSummaries> | undefined, b: TripSummaries | PlainMessage<TripSummaries> | undefined): boolean {
+    return proto3.util.equals(TripSummaries, a, b);
+  }
+}
+
+/**
+ * @generated from message chronotopia.GetRouteMatchTraceRequest
+ */
+export class GetRouteMatchTraceRequest extends Message<GetRouteMatchTraceRequest> {
+  /**
+   * @generated from field: uint32 trip_index = 1;
+   */
+  tripIndex = 0;
+
+  constructor(data?: PartialMessage<GetRouteMatchTraceRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chronotopia.GetRouteMatchTraceRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "trip_index", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetRouteMatchTraceRequest {
+    return new GetRouteMatchTraceRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetRouteMatchTraceRequest {
+    return new GetRouteMatchTraceRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetRouteMatchTraceRequest {
+    return new GetRouteMatchTraceRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetRouteMatchTraceRequest | PlainMessage<GetRouteMatchTraceRequest> | undefined, b: GetRouteMatchTraceRequest | PlainMessage<GetRouteMatchTraceRequest> | undefined): boolean {
+    return proto3.util.equals(GetRouteMatchTraceRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message chronotopia.TripRequest
+ */
+export class TripRequest extends Message<TripRequest> {
+  /**
+   * @generated from field: uint32 trip_index = 1;
+   */
+  tripIndex = 0;
+
+  constructor(data?: PartialMessage<TripRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chronotopia.TripRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "trip_index", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): TripRequest {
+    return new TripRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): TripRequest {
+    return new TripRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): TripRequest {
+    return new TripRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: TripRequest | PlainMessage<TripRequest> | undefined, b: TripRequest | PlainMessage<TripRequest> | undefined): boolean {
+    return proto3.util.equals(TripRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message chronotopia.ProcessedTrip
+ */
+export class ProcessedTrip extends Message<ProcessedTrip> {
+  /**
+   * @generated from field: chronotopia.Trip trip = 1;
+   */
+  trip?: Trip;
+
+  /**
+   * @generated from field: repeated chronotopia.RoadSegment matched_segments = 2;
+   */
+  matchedSegments: RoadSegment[] = [];
+
+  /**
+   * @generated from field: chronotopia.RouteMatchTrace route_match_trace = 3;
+   */
+  routeMatchTrace?: RouteMatchTrace;
+
+  /**
+   * @generated from field: string geojson = 4;
+   */
+  geojson = "";
+
+  constructor(data?: PartialMessage<ProcessedTrip>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chronotopia.ProcessedTrip";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "trip", kind: "message", T: Trip },
+    { no: 2, name: "matched_segments", kind: "message", T: RoadSegment, repeated: true },
+    { no: 3, name: "route_match_trace", kind: "message", T: RouteMatchTrace },
+    { no: 4, name: "geojson", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ProcessedTrip {
+    return new ProcessedTrip().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ProcessedTrip {
+    return new ProcessedTrip().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ProcessedTrip {
+    return new ProcessedTrip().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ProcessedTrip | PlainMessage<ProcessedTrip> | undefined, b: ProcessedTrip | PlainMessage<ProcessedTrip> | undefined): boolean {
+    return proto3.util.equals(ProcessedTrip, a, b);
   }
 }
 
@@ -544,27 +839,32 @@ export class RouteMatchTrace extends Message<RouteMatchTrace> {
  */
 export class WindowDebugRequest extends Message<WindowDebugRequest> {
   /**
-   * @generated from field: uint32 window_index = 1;
+   * @generated from field: uint32 trip_index = 1;
+   */
+  tripIndex = 0;
+
+  /**
+   * @generated from field: uint32 window_index = 2;
    */
   windowIndex = 0;
 
   /**
-   * @generated from field: uint32 start_point = 2;
+   * @generated from field: uint32 start_point = 3;
    */
   startPoint = 0;
 
   /**
-   * @generated from field: uint32 end_point = 3;
+   * @generated from field: uint32 end_point = 4;
    */
   endPoint = 0;
 
   /**
-   * @generated from field: optional uint64 from_segment_id = 4;
+   * @generated from field: optional uint64 from_segment_id = 5;
    */
   fromSegmentId?: bigint;
 
   /**
-   * @generated from field: optional uint64 to_segment_id = 5;
+   * @generated from field: optional uint64 to_segment_id = 6;
    */
   toSegmentId?: bigint;
 
@@ -576,11 +876,12 @@ export class WindowDebugRequest extends Message<WindowDebugRequest> {
   static readonly runtime: typeof proto3 = proto3;
   static readonly typeName = "chronotopia.WindowDebugRequest";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "window_index", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
-    { no: 2, name: "start_point", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
-    { no: 3, name: "end_point", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
-    { no: 4, name: "from_segment_id", kind: "scalar", T: 4 /* ScalarType.UINT64 */, opt: true },
-    { no: 5, name: "to_segment_id", kind: "scalar", T: 4 /* ScalarType.UINT64 */, opt: true },
+    { no: 1, name: "trip_index", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+    { no: 2, name: "window_index", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+    { no: 3, name: "start_point", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+    { no: 4, name: "end_point", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+    { no: 5, name: "from_segment_id", kind: "scalar", T: 4 /* ScalarType.UINT64 */, opt: true },
+    { no: 6, name: "to_segment_id", kind: "scalar", T: 4 /* ScalarType.UINT64 */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WindowDebugRequest {
@@ -605,22 +906,27 @@ export class WindowDebugRequest extends Message<WindowDebugRequest> {
  */
 export class ConnectivityRequest extends Message<ConnectivityRequest> {
   /**
-   * @generated from field: optional uint32 start_point_index = 1;
+   * @generated from field: uint32 trip_index = 1;
+   */
+  tripIndex = 0;
+
+  /**
+   * @generated from field: optional uint32 start_point_index = 2;
    */
   startPointIndex?: number;
 
   /**
-   * @generated from field: optional uint32 end_point_index = 2;
+   * @generated from field: optional uint32 end_point_index = 3;
    */
   endPointIndex?: number;
 
   /**
-   * @generated from field: optional uint64 from_segment_id = 3;
+   * @generated from field: optional uint64 from_segment_id = 4;
    */
   fromSegmentId?: bigint;
 
   /**
-   * @generated from field: optional uint64 to_segment_id = 4;
+   * @generated from field: optional uint64 to_segment_id = 5;
    */
   toSegmentId?: bigint;
 
@@ -632,10 +938,11 @@ export class ConnectivityRequest extends Message<ConnectivityRequest> {
   static readonly runtime: typeof proto3 = proto3;
   static readonly typeName = "chronotopia.ConnectivityRequest";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "start_point_index", kind: "scalar", T: 13 /* ScalarType.UINT32 */, opt: true },
-    { no: 2, name: "end_point_index", kind: "scalar", T: 13 /* ScalarType.UINT32 */, opt: true },
-    { no: 3, name: "from_segment_id", kind: "scalar", T: 4 /* ScalarType.UINT64 */, opt: true },
-    { no: 4, name: "to_segment_id", kind: "scalar", T: 4 /* ScalarType.UINT64 */, opt: true },
+    { no: 1, name: "trip_index", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+    { no: 2, name: "start_point_index", kind: "scalar", T: 13 /* ScalarType.UINT32 */, opt: true },
+    { no: 3, name: "end_point_index", kind: "scalar", T: 13 /* ScalarType.UINT32 */, opt: true },
+    { no: 4, name: "from_segment_id", kind: "scalar", T: 4 /* ScalarType.UINT64 */, opt: true },
+    { no: 5, name: "to_segment_id", kind: "scalar", T: 4 /* ScalarType.UINT64 */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ConnectivityRequest {
@@ -754,9 +1061,9 @@ export class SegmentCandidate extends Message<SegmentCandidate> {
   projection?: Point;
 
   /**
-   * @generated from field: double score = 4;
+   * @generated from field: double cost = 4;
    */
-  score = 0;
+  cost = 0;
 
   constructor(data?: PartialMessage<SegmentCandidate>) {
     super();
@@ -769,7 +1076,7 @@ export class SegmentCandidate extends Message<SegmentCandidate> {
     { no: 1, name: "segment", kind: "message", T: RoadSegment },
     { no: 2, name: "distance", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
     { no: 3, name: "projection", kind: "message", T: Point },
-    { no: 4, name: "score", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
+    { no: 4, name: "cost", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SegmentCandidate {

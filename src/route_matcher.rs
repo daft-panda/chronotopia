@@ -711,9 +711,9 @@ impl RouteMatcher {
                         segment.coordinates[closest_node_idx].y,
                     );
 
-                    // Calculate score (lower is better)
-                    // Use road type to influence score - motorways get a bonus
-                    let base_score = min_node_distance / (max_distance / 2.0);
+                    // Calculate cost (lower is better)
+                    // Use road type to influence cost - motorways get a bonus
+                    let base_cost = min_node_distance / (max_distance / 2.0);
                     let road_type_factor = match segment.highway_type.as_str() {
                         "motorway" => 0.5,
                         "motorway_link" => 0.6,
@@ -723,19 +723,19 @@ impl RouteMatcher {
                         _ => 1.0,
                     };
 
-                    let score = base_score * road_type_factor;
+                    let cost = base_cost * road_type_factor;
 
                     node_based_candidates.push(SegmentCandidate {
                         segment,
                         distance: min_node_distance,
                         projection: node_point,
-                        cost: score,
+                        cost,
                     });
                 }
             }
         }
 
-        // Sort candidates by score
+        // Sort candidates by cost
         node_based_candidates
             .sort_by(|a, b| a.cost.partial_cmp(&b.cost).unwrap_or(Ordering::Equal));
 
@@ -1144,6 +1144,9 @@ impl RouteMatcher {
                         best_candidate = Some(candidate.segment.id);
                         distance = candidate.distance;
                     }
+                }
+                if best_candidate.is_none() {
+                    bail!("No candidate found for window")
                 }
                 overlapping_points.push((window_end, best_candidate.unwrap()));
             }
@@ -3183,10 +3186,10 @@ impl RouteMatcher {
                 "segment_id": segment.id,
                 "osm_way_id": segment.osm_way_id,
                 "rank": i,
-                "score": candidate.cost,
+                "cost": candidate.cost,
                 "distance": candidate.distance,
                 "highway_type": segment.highway_type,
-                "description": format!("Segment ID: {} (OSM: {}), Rank: {}, Score: {:.2}, Distance: {:.2}m", 
+                "description": format!("Segment ID: {} (OSM: {}), Rank: {}, Cost: {:.2}, Distance: {:.2}m", 
                                     segment.id, segment.osm_way_id, i, candidate.cost, candidate.distance)
             },
             "geometry": {
@@ -3675,49 +3678,6 @@ impl RouteMatcher {
         None
     }
 
-    /// Helper function to check if two segments are connected
-    fn segments_are_connected(&mut self, segment1_id: u64, segment2_id: u64) -> bool {
-        // Try to load the segments from the segment map
-        let segment_map = match self.get_segment_map() {
-            Ok(map) => map,
-            Err(_) => return false,
-        };
-
-        // Check direct connectivity first
-        if let Some(segment1) = segment_map.get(&segment1_id) {
-            if segment1.connections.contains(&segment2_id) {
-                return true;
-            }
-        }
-
-        if let Some(segment2) = segment_map.get(&segment2_id) {
-            if segment2.connections.contains(&segment1_id) {
-                return true;
-            }
-        }
-
-        // If either segment is missing from our map, try to load it directly
-        let segment1 = match segment_map.get(&segment1_id) {
-            Some(s) => s.clone(),
-            None => match self.tile_loader.get_segment(segment1_id) {
-                Ok(s) => s,
-                Err(_) => return false,
-            },
-        };
-
-        let segment2 = match segment_map.get(&segment2_id) {
-            Some(s) => s.clone(),
-            None => match self.tile_loader.get_segment(segment2_id) {
-                Ok(s) => s,
-                Err(_) => return false,
-            },
-        };
-
-        // Check if segments should be connected based on more advanced criteria
-        let (_, should_connect, _) = self.check_segment_connectivity(&segment1, &segment2);
-        should_connect
-    }
-
     fn find_candidate_segments_for_point(
         &mut self,
         point: Point<f64>,
@@ -3742,14 +3702,14 @@ impl RouteMatcher {
 
                 // Check if within max distance
                 if distance <= max_distance {
-                    // Calculate score (lower is better)
-                    let score = distance / (max_distance / 2.0);
+                    // Calculate cost (lower is better)
+                    let cost = distance / (max_distance / 2.0);
 
                     candidates.push(SegmentCandidate {
                         segment,
                         distance,
                         projection,
-                        cost: score,
+                        cost,
                     });
                 }
             }
@@ -3771,21 +3731,21 @@ impl RouteMatcher {
                     let (projection, distance, _) = self.project_point_to_segment(point, &segment);
 
                     if distance <= extended_max {
-                        // Higher score due to extended range
-                        let score = distance / (max_distance / 2.0) * 1.5;
+                        // Higher cost due to extended range
+                        let cost = distance / (max_distance / 2.0) * 1.5;
 
                         candidates.push(SegmentCandidate {
                             segment,
                             distance,
                             projection,
-                            cost: score,
+                            cost,
                         });
                     }
                 }
             }
         }
 
-        // Sort candidates by score
+        // Sort candidates by cost
         candidates.sort_by(|a, b| a.cost.partial_cmp(&b.cost).unwrap_or(Ordering::Equal));
 
         // Limit number of candidates
@@ -3915,12 +3875,12 @@ impl RouteMatcher {
             } else {
                 let mut rank_info = Vec::new();
                 for &point_idx in &points_containing_way {
-                    if let Some((rank, score)) = job.get_way_id_candidate_rank(point_idx, way_id) {
+                    if let Some((rank, cost)) = job.get_way_id_candidate_rank(point_idx, way_id) {
                         rank_info.push(format!(
-                            "point {}: rank {} (score: {:.2})",
+                            "point {}: rank {} (cost: {:.2})",
                             point_idx,
                             rank + 1,
-                            score
+                            cost
                         ));
                     }
                 }

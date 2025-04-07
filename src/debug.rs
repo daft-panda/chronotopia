@@ -306,13 +306,13 @@ impl DebugVisualizer {
                     "segment_id": segment.id,
                     "osm_way_id": segment.osm_way_id,
                     "rank": i,
-                    "score": candidate.cost,
+                    "cost": candidate.cost,
                     "distance": candidate.distance,
                     "highway_type": segment.highway_type,
                     "color": if i == 0 { "#00ff00" } else { "#3388ff" },
                     "opacity": 1.0 - (i as f64 * 0.15).min(0.8),
                     "weight": 4 - i.min(3),
-                    "description": format!("Segment ID: {} (OSM: {}), Rank: {}, Score: {:.2}, Distance: {:.2}m", 
+                    "description": format!("Segment ID: {} (OSM: {}), Rank: {}, Cost: {:.2}, Distance: {:.2}m", 
                                         segment.id, segment.osm_way_id, i, candidate.cost, candidate.distance)
                 },
                 "geometry": {

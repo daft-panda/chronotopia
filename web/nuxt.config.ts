@@ -12,6 +12,8 @@ export default defineNuxtConfig({
     "nuxt-maplibre",
   ],
 
+  css: ["~/assets/css/main.css"],
+
   runtimeConfig: {
     apiBaseUrl: "http://localhost:10000",
     serviceWorkers: "run",
