@@ -31,11 +31,12 @@
                         <div class="p-4">
                             <div class="flex justify-between mb-2">
                                 <h3 class="font-bold text-lg">Trip {{ trip.index }}</h3>
-                                <span class="text-sm text-gray-500">{{ formatDuration(trip.durationSeconds) }}</span>
+                                <span v-if="trip.durationSeconds" class="text-sm text-gray-500">{{
+                                    formatDuration(trip.durationSeconds) }}</span>
                             </div>
 
                             <div class="text-sm text-gray-600 mb-2">
-                                {{ formatDate(trip.start) }}
+                                {{ formatDateTime(trip.start) }}
                             </div>
 
                             <div class="flex justify-between text-xs text-gray-500">
@@ -96,7 +97,7 @@
                         </MglMap>
                     </ClientOnly>
 
-                    <div class="absolute bottom-4 right-4 z-10">
+                    <div class="absolute top-4 right-4 z-10">
                         <button v-if="selectedTrip.status === MapMatchingStatus.COMPLETED"
                             class="bg-blue-500 text-white px-4 py-2 rounded-lg shadow hover:bg-blue-600 transition"
                             @click="viewMapMatching">
@@ -122,6 +123,7 @@ import { MapMatchingStatus, type TripSummary } from '~/model/chronotopia_pb';
 import { Timeline, type TimelineItem, type TimelineItemRange } from 'vue-timeline-chart'
 import 'vue-timeline-chart/style.css'
 import type { LngLatLike } from 'maplibre-gl';
+import type { DateTime } from '~/model/datetime_pb';
 
 const { $api } = useNuxtApp();
 const router = useRouter();
@@ -166,19 +168,32 @@ const getMapCenter = (): LngLatLike => {
     if (selectedTrip.value && selectedTrip.value.startPoint) {
         return [selectedTrip.value.startPoint.lon, selectedTrip.value.startPoint.lat];
     }
-    return [-43.4795272, -22.738402100000002]; // Default center
+    return [-43.4795272, -22.7384021]; // Default center
 };
 
-// Format the timestamp to readable date string
-const formatDate = (timestamp) => {
-    if (!timestamp) return '';
+// Convert DateTime object to JavaScript Date
+const dateTimeToJsDate = (dateTime: DateTime) => {
+    if (!dateTime) return null;
 
-    const date = new Date(Number(timestamp.seconds) * 1000);
-    return date.toLocaleString();
+    // Extract datetime components
+    const { year, month, day, hours, minutes, seconds, nanos } = dateTime;
+
+    // JavaScript months are 0-based (0-11), while DateTime months are 1-based (1-12)
+    return new Date(year, month - 1, day, hours, minutes, seconds, nanos / 1000000);
+};
+
+// Format DateTime to readable string
+const formatDateTime = (dateTime: DateTime) => {
+    if (!dateTime) return '';
+
+    const jsDate = dateTimeToJsDate(dateTime);
+    if (!jsDate) return '';
+
+    return jsDate.toLocaleString();
 };
 
 // Format duration from seconds to readable string
-const formatDuration = (seconds) => {
+const formatDuration = (seconds: number) => {
     if (!seconds) return '';
 
     const hours = Math.floor(seconds / 3600);
@@ -216,23 +231,31 @@ const getStatusBadgeClass = (status: MapMatchingStatus) => {
     return classMap[MapMatchingStatus[status]] || 'bg-gray-500 text-white';
 };
 
+// Get DateTime timestamp in milliseconds for timeline
+const getDateTimeTimestamp = (dateTime: DateTime) => {
+    if (!dateTime) return Date.now();
+
+    const jsDate = dateTimeToJsDate(dateTime);
+    return jsDate ? jsDate.getTime() : Date.now();
+};
+
 // Timeline configuration
 const timelineConfig = {
     startTime: computed(() => {
         if (trips.value.length === 0) return new Date().getTime() - 86400000; // 1 day ago
-        const firstTrip = trips.value.reduce((earliest, trip) => {
+        const firstTrip = trips.value.reduce((earliest: TripSummary, trip) => {
             if (!trip.start) return earliest;
-            return (!earliest.start || trip.start.seconds < earliest.start.seconds) ? trip : earliest;
+            return (!earliest.start || getDateTimeTimestamp(trip.start) < getDateTimeTimestamp(earliest.start)) ? trip : earliest;
         }, {});
-        return firstTrip.start ? new Date(Number(firstTrip.start.seconds) * 1000) : new Date(Date.now() - 86400000);
+        return firstTrip.start ? dateTimeToJsDate(firstTrip.start) : new Date(Date.now() - 86400000);
     }),
     endTime: computed(() => {
         if (trips.value.length === 0) return new Date();
-        const lastTrip = trips.value.reduce((latest, trip) => {
+        const lastTrip = trips.value.reduce((latest: TripSummary, trip) => {
             if (!trip.end) return latest;
-            return (!latest.end || trip.end.seconds > latest.end.seconds) ? trip : latest;
+            return (!latest.end || getDateTimeTimestamp(trip.end) > getDateTimeTimestamp(latest.end)) ? trip : latest;
         }, {});
-        return lastTrip.end ? new Date(Number(lastTrip.end.seconds) * 1000) : new Date();
+        return lastTrip.end ? dateTimeToJsDate(lastTrip.end) : new Date();
     }),
 };
 

@@ -4,7 +4,8 @@
 // @ts-nocheck
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
-import { Message, proto3, protoInt64, StringValue, Timestamp } from "@bufbuild/protobuf";
+import { Message, proto3, protoInt64, StringValue } from "@bufbuild/protobuf";
+import { DateTime } from "./datetime_pb.js";
 
 /**
  * @generated from enum chronotopia.MapMatchingStatus
@@ -49,14 +50,14 @@ proto3.util.setEnumType(MapMatchingStatus, "chronotopia.MapMatchingStatus", [
  */
 export class RequestParameters extends Message<RequestParameters> {
   /**
-   * @generated from field: optional google.protobuf.Timestamp from = 1;
+   * @generated from field: optional google.type.DateTime from = 1;
    */
-  from?: Timestamp;
+  from?: DateTime;
 
   /**
-   * @generated from field: optional google.protobuf.Timestamp to = 2;
+   * @generated from field: optional google.type.DateTime to = 2;
    */
-  to?: Timestamp;
+  to?: DateTime;
 
   /**
    * @generated from field: optional uint32 h3 = 3;
@@ -71,8 +72,8 @@ export class RequestParameters extends Message<RequestParameters> {
   static readonly runtime: typeof proto3 = proto3;
   static readonly typeName = "chronotopia.RequestParameters";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "from", kind: "message", T: Timestamp, opt: true },
-    { no: 2, name: "to", kind: "message", T: Timestamp, opt: true },
+    { no: 1, name: "from", kind: "message", T: DateTime, opt: true },
+    { no: 2, name: "to", kind: "message", T: DateTime, opt: true },
     { no: 3, name: "h3", kind: "scalar", T: 13 /* ScalarType.UINT32 */, opt: true },
   ]);
 
@@ -146,9 +147,9 @@ export class Point extends Message<Point> {
   latlon?: LatLon;
 
   /**
-   * @generated from field: google.protobuf.Timestamp timestamp = 3;
+   * @generated from field: google.type.DateTime dateTime = 3;
    */
-  timestamp?: Timestamp;
+  dateTime?: DateTime;
 
   /**
    * @generated from field: optional string label = 4;
@@ -174,7 +175,7 @@ export class Point extends Message<Point> {
   static readonly typeName = "chronotopia.Point";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "latlon", kind: "message", T: LatLon },
-    { no: 3, name: "timestamp", kind: "message", T: Timestamp },
+    { no: 3, name: "dateTime", kind: "message", T: DateTime },
     { no: 4, name: "label", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 5, name: "note", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 6, name: "elevation", kind: "scalar", T: 2 /* ScalarType.FLOAT */, opt: true },
@@ -207,14 +208,14 @@ export class Trip extends Message<Trip> {
   points: Point[] = [];
 
   /**
-   * @generated from field: google.protobuf.Timestamp start = 2;
+   * @generated from field: google.type.DateTime start = 2;
    */
-  start?: Timestamp;
+  start?: DateTime;
 
   /**
-   * @generated from field: google.protobuf.Timestamp stop = 3;
+   * @generated from field: google.type.DateTime stop = 3;
    */
-  stop?: Timestamp;
+  stop?: DateTime;
 
   /**
    * @generated from field: optional string label = 10;
@@ -230,8 +231,8 @@ export class Trip extends Message<Trip> {
   static readonly typeName = "chronotopia.Trip";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "points", kind: "message", T: Point, repeated: true },
-    { no: 2, name: "start", kind: "message", T: Timestamp },
-    { no: 3, name: "stop", kind: "message", T: Timestamp },
+    { no: 2, name: "start", kind: "message", T: DateTime },
+    { no: 3, name: "stop", kind: "message", T: DateTime },
     { no: 10, name: "label", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
   ]);
 
@@ -299,14 +300,14 @@ export class TripSummary extends Message<TripSummary> {
   index = 0;
 
   /**
-   * @generated from field: google.protobuf.Timestamp start = 2;
+   * @generated from field: google.type.DateTime start = 2;
    */
-  start?: Timestamp;
+  start?: DateTime;
 
   /**
-   * @generated from field: google.protobuf.Timestamp end = 3;
+   * @generated from field: google.type.DateTime end = 3;
    */
-  end?: Timestamp;
+  end?: DateTime;
 
   /**
    * @generated from field: uint32 point_count = 4;
@@ -319,9 +320,9 @@ export class TripSummary extends Message<TripSummary> {
   status = MapMatchingStatus.UNKNOWN;
 
   /**
-   * @generated from field: int64 duration_seconds = 6;
+   * @generated from field: optional int64 duration_seconds = 6;
    */
-  durationSeconds = protoInt64.zero;
+  durationSeconds?: bigint;
 
   /**
    * @generated from field: double distance_meters = 7;
@@ -352,11 +353,11 @@ export class TripSummary extends Message<TripSummary> {
   static readonly typeName = "chronotopia.TripSummary";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "index", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
-    { no: 2, name: "start", kind: "message", T: Timestamp },
-    { no: 3, name: "end", kind: "message", T: Timestamp },
+    { no: 2, name: "start", kind: "message", T: DateTime },
+    { no: 3, name: "end", kind: "message", T: DateTime },
     { no: 4, name: "point_count", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
     { no: 5, name: "status", kind: "enum", T: proto3.getEnumType(MapMatchingStatus) },
-    { no: 6, name: "duration_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 6, name: "duration_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */, opt: true },
     { no: 7, name: "distance_meters", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
     { no: 8, name: "start_point", kind: "message", T: LatLon },
     { no: 9, name: "end_point", kind: "message", T: LatLon },

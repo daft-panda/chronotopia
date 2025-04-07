@@ -1,13 +1,12 @@
-use chrono::{DateTime, FixedOffset, TimeZone, Utc};
-use prost_types::Timestamp;
+use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, TimeZone, Timelike, Utc};
+
+use crate::proto::date_time::TimeOffset;
 
 pub(crate) mod google_maps_local_timeline {
     use chrono::{DateTime, FixedOffset, TimeDelta};
     use serde::{Deserialize, Serialize};
 
     use crate::proto::{LatLon, Point, Trip};
-
-    use super::chrono_to_prost;
 
     #[derive(Debug, Serialize, Deserialize, Clone)]
     #[serde(untagged)]
@@ -106,12 +105,14 @@ pub(crate) mod google_maps_local_timeline {
                 };
                 Some(Point {
                     latlon: Some(LatLon { lat, lon }),
-                    timestamp: Some(chrono_to_prost(
-                        &entry
+                    date_time: Some(
+                        entry
                             .start_time
                             .checked_add_signed(TimeDelta::minutes(offset_minutes))
-                            .unwrap(),
-                    )),
+                            .as_ref()
+                            .unwrap()
+                            .into(),
+                    ),
                     ..Default::default()
                 })
             }
@@ -173,7 +174,7 @@ pub(crate) mod google_maps_local_timeline {
                 }
             }
             Trip {
-                start: points.first().and_then(|ts| ts.timestamp),
+                start: points.first().and_then(|ts| ts.date_time.clone()),
                 points,
                 ..Default::default()
             }
@@ -181,17 +182,68 @@ pub(crate) mod google_maps_local_timeline {
     }
 }
 
-// Convert chrono::DateTime<FixedOffset> to prost_types::Timestamp
-pub fn chrono_to_prost(dt: &DateTime<FixedOffset>) -> Timestamp {
-    let utc_dt = dt.with_timezone(&Utc);
-    Timestamp {
-        seconds: utc_dt.timestamp(),
-        nanos: utc_dt.timestamp_subsec_nanos() as i32,
+impl From<&DateTime<FixedOffset>> for crate::proto::DateTime {
+    fn from(value: &DateTime<FixedOffset>) -> Self {
+        Self {
+            year: value.year() as u32,
+            month: value.month(),
+            day: value.day(),
+            hours: value.hour(),
+            minutes: value.minute(),
+            seconds: value.second(),
+            nanos: value.nanosecond(),
+            time_offset: Some(crate::proto::date_time::TimeOffset::UtcOffset(
+                prost_types::Duration {
+                    seconds: value.offset().local_minus_utc() as i64,
+                    nanos: 0,
+                },
+            )),
+        }
     }
 }
 
-// Convert prost_types::Timestamp to chrono::DateTime<FixedOffset>
-pub fn prost_to_chrono(ts: &Timestamp, offset: FixedOffset) -> DateTime<FixedOffset> {
-    let utc_dt = Utc.timestamp_opt(ts.seconds, ts.nanos as u32).unwrap();
-    utc_dt.with_timezone(&offset)
+impl From<&crate::proto::DateTime> for DateTime<FixedOffset> {
+    fn from(value: &crate::proto::DateTime) -> Self {
+        let nd = NaiveDate::from_ymd_opt(value.year as i32, value.month, value.day)
+            .unwrap()
+            .and_hms_nano_opt(value.hours, value.minutes, value.seconds, value.nanos)
+            .unwrap();
+        match &value.time_offset {
+            Some(TimeOffset::TimeZone(_v)) => {
+                unimplemented!();
+            }
+            Some(TimeOffset::UtcOffset(v)) => DateTime::from_naive_utc_and_offset(
+                nd,
+                FixedOffset::east_opt(v.seconds as i32).unwrap(),
+            ),
+            None => nd.and_utc().into(),
+        }
+    }
+}
+
+impl From<&crate::proto::DateTime> for DateTime<Utc> {
+    fn from(value: &crate::proto::DateTime) -> Self {
+        let nd = NaiveDate::from_ymd_opt(value.year as i32, value.month, value.day)
+            .unwrap()
+            .and_hms_nano_opt(value.hours, value.minutes, value.seconds, value.nanos)
+            .unwrap();
+        match &value.time_offset {
+            Some(TimeOffset::TimeZone(_v)) => {
+                unimplemented!();
+            }
+            Some(TimeOffset::UtcOffset(v)) => DateTime::<FixedOffset>::from_naive_utc_and_offset(
+                nd,
+                FixedOffset::east_opt(v.seconds as i32).unwrap(),
+            )
+            .to_utc(),
+            None => nd.and_utc(),
+        }
+    }
+}
+
+impl crate::proto::DateTime {
+    pub fn timestamp(&self) -> i64 {
+        let dt: DateTime<FixedOffset> = self.into();
+        dt.timestamp()
+    }
 }

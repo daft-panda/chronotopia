@@ -118,7 +118,7 @@ struct ChronotopiaService {
     location_history: Arc<Vec<LocationHistoryEntry>>,
     route_matcher: Arc<Mutex<RouteMatcher>>,
     processed_trips: Arc<RwLock<HashMap<usize, ProcessedTrip>>>,
-    processing_status: Arc<RwLock<HashMap<usize, MapMatchingStatus>>>,
+    trip_summaries: Arc<RwLock<HashMap<usize, TripSummary>>>,
 }
 
 impl ChronotopiaService {
@@ -130,7 +130,7 @@ impl ChronotopiaService {
             location_history: Arc::new(location_history),
             route_matcher: Arc::new(Mutex::new(route_matcher)),
             processed_trips: Arc::new(RwLock::new(HashMap::new())),
-            processing_status: Arc::new(RwLock::new(HashMap::new())),
+            trip_summaries: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -145,9 +145,32 @@ impl ChronotopiaService {
 
         // Initialize all trips as pending
         {
-            let mut status = self.processing_status.write().await;
-            for (idx, _) in trips.iter().enumerate() {
-                status.insert(idx, MapMatchingStatus::Pending);
+            let mut status = self.trip_summaries.write().await;
+            for (idx, trip) in trips.iter().enumerate() {
+                // Calculate some basic stats
+                let duration_seconds =
+                    if let (Some(start_time), Some(stop_time)) = (&trip.start, &trip.stop) {
+                        Some((stop_time.seconds - start_time.seconds) as i64)
+                    } else {
+                        None
+                    };
+
+                let point_count = trip.points.len() as u32;
+                status.insert(
+                    idx,
+                    TripSummary {
+                        index: idx as u32,
+                        start: trip.start.clone(),
+                        end: trip.stop.clone(),
+                        point_count,
+                        status: MapMatchingStatus::Pending.into(),
+                        duration_seconds,
+                        distance_meters: 0.0, // This would require calculating from the matched segments
+                        start_point: trip.points.first().and_then(|p| p.latlon),
+                        end_point: trip.points.last().and_then(|p| p.latlon),
+                        matched_segment_count: 0,
+                    },
+                );
             }
         }
 
@@ -157,19 +180,27 @@ impl ChronotopiaService {
         for (idx, trip) in trips.into_iter().enumerate() {
             // Update status to processing
             {
-                let mut status = self.processing_status.write().await;
-                status.insert(idx, MapMatchingStatus::Processing);
+                let mut status = self.trip_summaries.write().await;
+                status
+                    .get_mut(&idx)
+                    .unwrap()
+                    .set_status(MapMatchingStatus::Processing);
             }
 
             match self.process_trip(trip.clone(), idx).await {
-                Ok(_) => {
-                    let mut status = self.processing_status.write().await;
-                    status.insert(idx, MapMatchingStatus::Completed);
+                Ok(processed_trip) => {
+                    let mut status = self.trip_summaries.write().await;
+                    let summary = status.get_mut(&idx).unwrap();
+                    summary.set_status(MapMatchingStatus::Completed);
+                    summary.matched_segment_count = processed_trip.matched_segments.len() as u32;
                     info!("Successfully processed trip {}", idx);
                 }
                 Err(e) => {
-                    let mut status = self.processing_status.write().await;
-                    status.insert(idx, MapMatchingStatus::Failed);
+                    let mut status = self.trip_summaries.write().await;
+                    status
+                        .get_mut(&idx)
+                        .unwrap()
+                        .set_status(MapMatchingStatus::Failed);
                     warn!("Failed to process trip {}: {}", idx, e);
                 }
             }
@@ -194,8 +225,24 @@ impl ChronotopiaService {
                 if trip.points.len() >= 2 {
                     if let Some(ptrip) = pending_trip.as_mut() {
                         // Check if the trips should be merged (close in time)
-                        if trip.points.first().unwrap().timestamp.unwrap().seconds
-                            - ptrip.points.last().unwrap().timestamp.unwrap().seconds
+                        if trip
+                            .points
+                            .first()
+                            .as_ref()
+                            .unwrap()
+                            .date_time
+                            .as_ref()
+                            .unwrap()
+                            .timestamp()
+                            - ptrip
+                                .points
+                                .last()
+                                .as_ref()
+                                .unwrap()
+                                .date_time
+                                .as_ref()
+                                .unwrap()
+                                .timestamp()
                             < chrono::Duration::hours(1).num_seconds()
                         {
                             debug!("Merging timeline entries");
@@ -220,20 +267,19 @@ impl ChronotopiaService {
         Ok(trips)
     }
 
-    async fn process_trip(&self, trip: Trip, trip_idx: usize) -> Result<()> {
+    async fn process_trip(&self, trip: Trip, trip_idx: usize) -> Result<ProcessedTrip> {
         // Extract points and timestamps
         let mut gps_points = Vec::new();
         let mut timestamps = Vec::new();
 
         for p in &trip.points {
-            if let Some(ts) = p.timestamp {
-                if let Some(dt) = DateTime::from_timestamp(ts.seconds, ts.nanos as u32) {
-                    gps_points.push(Point::new(
-                        p.latlon.as_ref().unwrap().lon,
-                        p.latlon.as_ref().unwrap().lat,
-                    ));
-                    timestamps.push(dt);
-                }
+            if let Some(ts) = &p.date_time {
+                let dt: DateTime<Utc> = ts.into();
+                gps_points.push(Point::new(
+                    p.latlon.as_ref().unwrap().lon,
+                    p.latlon.as_ref().unwrap().lat,
+                ));
+                timestamps.push(dt);
             }
         }
 
@@ -282,54 +328,24 @@ impl ChronotopiaService {
                 };
 
                 let mut trips = self.processed_trips.write().await;
-                trips.insert(trip_idx, processed_trip);
+                trips.insert(trip_idx, processed_trip.clone());
 
-                Ok(())
+                Ok(processed_trip)
             }
             Err(e) => {
                 warn!(
                     "Route-based map matching failed for trip {}: {}",
                     trip_idx, e
                 );
-                Err(e.into())
+                Err(e)
             }
         }
     }
 
     async fn get_trip_summary(&self, trip_idx: usize) -> Option<TripSummary> {
-        let trips = self.processed_trips.read().await;
-        let status = self.processing_status.read().await;
+        let trips = self.trip_summaries.read().await;
 
-        if let Some(processed_trip) = trips.get(&trip_idx) {
-            let trip = processed_trip.trip.as_ref()?;
-
-            // Calculate some basic stats
-            let start_time = trip.start.as_ref()?;
-            let end_time = trip.stop.as_ref()?;
-            let duration_seconds = end_time.seconds - start_time.seconds;
-            let point_count = trip.points.len() as u32;
-
-            return Some(TripSummary {
-                index: trip_idx as u32,
-                start: trip.start.clone(),
-                end: trip.stop.clone(),
-                point_count,
-                status: MapMatchingStatus::Completed.into(),
-                duration_seconds,
-                distance_meters: 0.0, // This would require calculating from the matched segments
-                start_point: trip.points.first().and_then(|p| p.latlon.clone()),
-                end_point: trip.points.last().and_then(|p| p.latlon.clone()),
-                matched_segment_count: processed_trip.matched_segments.len() as u32,
-            });
-        } else if status.contains_key(&trip_idx) {
-            // Trip exists but hasn't been processed yet
-            return Some(TripSummary {
-                status: (*status.get(&trip_idx).unwrap()).into(),
-                ..Default::default()
-            });
-        }
-
-        None
+        trips.get(&trip_idx).cloned()
     }
 
     async fn load_tiles_for_segments(
@@ -494,7 +510,7 @@ impl Chronotopia for ChronotopiaService {
         &self,
         _request: Request<()>,
     ) -> Result<Response<proto::TripSummaries>, Status> {
-        let status = self.processing_status.read().await;
+        let status = self.trip_summaries.read().await;
         let mut summaries = Vec::new();
 
         for idx in status.keys() {
@@ -642,11 +658,9 @@ impl Chronotopia for ChronotopiaService {
             .points
             .iter()
             .filter_map(|p| {
-                if let Some(latlon) = &p.latlon {
-                    Some(Point::new(latlon.lon, latlon.lat))
-                } else {
-                    None
-                }
+                p.latlon
+                    .as_ref()
+                    .map(|latlon| Point::new(latlon.lon, latlon.lat))
             })
             .collect();
 
@@ -656,13 +670,7 @@ impl Chronotopia for ChronotopiaService {
             .unwrap()
             .points
             .iter()
-            .filter_map(|p| {
-                if let Some(ts) = &p.timestamp {
-                    DateTime::from_timestamp(ts.seconds, ts.nanos as u32)
-                } else {
-                    None
-                }
-            })
+            .map(|p| p.date_time.as_ref().unwrap().into())
             .collect();
 
         let mut job = RouteMatchJob::new(points, timestamps, None);
@@ -741,11 +749,9 @@ impl Chronotopia for ChronotopiaService {
                 .points
                 .iter()
                 .filter_map(|p| {
-                    if let Some(latlon) = &p.latlon {
-                        Some(Point::new(latlon.lon, latlon.lat))
-                    } else {
-                        None
-                    }
+                    p.latlon
+                        .as_ref()
+                        .map(|latlon| Point::new(latlon.lon, latlon.lat))
                 })
                 .collect();
 
@@ -755,16 +761,10 @@ impl Chronotopia for ChronotopiaService {
                 .unwrap()
                 .points
                 .iter()
-                .filter_map(|p| {
-                    if let Some(ts) = &p.timestamp {
-                        DateTime::from_timestamp(ts.seconds, ts.nanos as u32)
-                    } else {
-                        None
-                    }
-                })
+                .map(|p| p.date_time.as_ref().unwrap().into())
                 .collect();
 
-            let mut job = RouteMatchJob::new(points, timestamps, None);
+            let job = RouteMatchJob::new(points, timestamps, None);
 
             // Copy graph and segment map from route matcher
             let loaded_tiles = route_matcher
@@ -1195,7 +1195,7 @@ impl From<PathfindingDebugInfo> for proto::PathfindingDebugInfo {
                         lat: candidate.projection.y(),
                         lon: candidate.projection.x(),
                     }),
-                    timestamp: None,
+                    date_time: None,
                     label: None,
                     note: None,
                     elevation: None,
@@ -1216,7 +1216,7 @@ impl From<PathfindingDebugInfo> for proto::PathfindingDebugInfo {
                         lat: candidate.projection.y(),
                         lon: candidate.projection.x(),
                     }),
-                    timestamp: None,
+                    date_time: None,
                     label: None,
                     note: None,
                     elevation: None,

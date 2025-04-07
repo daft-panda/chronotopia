@@ -2,6 +2,7 @@ syntax = "proto3";
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/wrappers.proto";
+import "datetime.proto";
 
 package chronotopia;
 
@@ -17,8 +18,8 @@ service Chronotopia {
 }
 
 message RequestParameters {
-    optional google.protobuf.Timestamp from = 1;
-    optional google.protobuf.Timestamp to = 2;
+    optional DateTime from = 1;
+    optional DateTime to = 2;
     optional uint32 h3 = 3;
 }
 
@@ -29,7 +30,7 @@ message LatLon {
 
 message Point {
     LatLon latlon = 1;
-    google.protobuf.Timestamp timestamp = 3;
+    DateTime dateTime = 3;
     optional string label = 4;
     optional string note = 5;
     optional float elevation = 6;
@@ -37,8 +38,8 @@ message Point {
 
 message Trip {
     repeated Point points = 1;
-    google.protobuf.Timestamp start = 2;
-    google.protobuf.Timestamp stop = 3;
+    DateTime start = 2;
+    DateTime stop = 3;
     optional string label = 10;
 }
 
@@ -56,11 +57,11 @@ enum MapMatchingStatus {
 
 message TripSummary {
     uint32 index = 1;
-    google.protobuf.Timestamp start = 2;
-    google.protobuf.Timestamp end = 3;
+    DateTime start = 2;
+    DateTime end = 3;
     uint32 point_count = 4;
     MapMatchingStatus status = 5;
-    int64 duration_seconds = 6;
+    optional int64 duration_seconds = 6;
     double distance_meters = 7;
     LatLon start_point = 8;
     LatLon end_point = 9;
