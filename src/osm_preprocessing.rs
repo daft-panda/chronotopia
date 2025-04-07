@@ -1,9 +1,10 @@
 use anyhow::Result;
-use geo::Haversine;
 use geo::{Coord, LineString, Point, algorithm::Distance};
+use geo::{Haversine, Intersects};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use log::{debug, info, warn};
 use osmpbf::{Element, ElementReader};
+use petgraph::prelude::DiGraphMap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -20,6 +21,9 @@ use std::{
 };
 
 use crate::route_matcher::{TileConfig, calculate_heading};
+use crate::routing::{
+    are_road_types_compatible, calculate_transition_cost, check_segment_connectivity,
+};
 
 /// Represents a road segment in the processed network
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -104,8 +108,182 @@ impl WaySegment {
 pub struct TileIndex {
     pub tile_id: String,
     pub bbox: geo_types::Rect<f64>,
-    pub road_segments: Vec<WaySegment>,
+    pub road_segments: Vec<OptimizedWaySegment>,
     pub segment_index: HashMap<u64, String>,
+    pub metadata: TileMetadata,
+    pub tile_graph: Option<TileGraph>, // New field for tile-specific graph data
+}
+
+// Metadata container for deduplication
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TileMetadata {
+    // Deduplicated street names dictionary (index -> name)
+    pub street_names: Vec<String>,
+
+    // Deduplicated highway types dictionary (index -> type)
+    pub highway_types: Vec<String>,
+
+    // Deduplicated tag dictionaries
+    pub tag_keys: Vec<String>,
+    pub tag_values: Vec<String>,
+}
+
+impl TileMetadata {
+    // Create a new empty metadata container
+    pub fn new() -> Self {
+        Self {
+            street_names: Vec::new(),
+            highway_types: Vec::new(),
+            tag_keys: Vec::new(),
+            tag_values: Vec::new(),
+        }
+    }
+
+    // Get or insert a highway type and return its index
+    pub fn get_or_insert_highway_type(&mut self, highway_type: &str) -> u16 {
+        if let Some(pos) = self.highway_types.iter().position(|s| s == highway_type) {
+            pos as u16
+        } else {
+            let pos = self.highway_types.len();
+            self.highway_types.push(highway_type.to_string());
+            pos as u16
+        }
+    }
+
+    // Get or insert a street name and return its index
+    pub fn get_or_insert_street_name(&mut self, name: &str) -> u16 {
+        if let Some(pos) = self.street_names.iter().position(|s| s == name) {
+            pos as u16
+        } else {
+            let pos = self.street_names.len();
+            self.street_names.push(name.to_string());
+            pos as u16
+        }
+    }
+
+    // Get or insert a tag key and return its index
+    pub fn get_or_insert_tag_key(&mut self, key: &str) -> u16 {
+        if let Some(pos) = self.tag_keys.iter().position(|s| s == key) {
+            pos as u16
+        } else {
+            let pos = self.tag_keys.len();
+            self.tag_keys.push(key.to_string());
+            pos as u16
+        }
+    }
+
+    // Get or insert a tag value and return its index
+    pub fn get_or_insert_tag_value(&mut self, value: &str) -> u16 {
+        if let Some(pos) = self.tag_values.iter().position(|s| s == value) {
+            pos as u16
+        } else {
+            let pos = self.tag_values.len();
+            self.tag_values.push(value.to_string());
+            pos as u16
+        }
+    }
+}
+
+// Optimized way segment with references to metadata
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct OptimizedWaySegment {
+    pub id: u64,
+    pub osm_way_id: u64,
+    pub nodes: Vec<u64>,
+    pub coordinates: Vec<Coord<f64>>,
+    pub is_oneway: bool,
+    pub highway_type_idx: u16, // Index into highway_types
+    pub max_speed: Option<f64>,
+    pub connections: Vec<u64>,
+    pub name_idx: Option<u16>, // Index into street_names
+    pub metadata_indices: Option<Vec<(u16, u16)>>, // (key_idx, value_idx) pairs
+}
+
+impl OptimizedWaySegment {
+    // Convert a regular way segment to an optimized one, updating metadata
+    pub fn from_way_segment(segment: &WaySegment, metadata: &mut TileMetadata) -> Self {
+        let highway_type_idx = metadata.get_or_insert_highway_type(&segment.highway_type);
+
+        let name_idx = segment
+            .name
+            .as_ref()
+            .map(|name| metadata.get_or_insert_street_name(name));
+
+        let metadata_indices = segment.metadata.as_ref().map(|tags| {
+            tags.iter()
+                .map(|(key, value)| {
+                    let key_idx = metadata.get_or_insert_tag_key(key);
+                    let value_idx = metadata.get_or_insert_tag_value(value);
+                    (key_idx, value_idx)
+                })
+                .collect()
+        });
+
+        Self {
+            id: segment.id,
+            osm_way_id: segment.osm_way_id,
+            nodes: segment.nodes.clone(),
+            coordinates: segment.coordinates.clone(),
+            is_oneway: segment.is_oneway,
+            highway_type_idx,
+            max_speed: segment.max_speed,
+            connections: segment.connections.clone(),
+            name_idx,
+            metadata_indices,
+        }
+    }
+
+    // Convert back to a regular way segment
+    pub fn to_way_segment(&self, metadata: &TileMetadata) -> WaySegment {
+        let highway_type = if (self.highway_type_idx as usize) < metadata.highway_types.len() {
+            metadata.highway_types[self.highway_type_idx as usize].clone()
+        } else {
+            "unknown".to_string()
+        };
+
+        let name = self.name_idx.and_then(|idx| {
+            if (idx as usize) < metadata.street_names.len() {
+                Some(metadata.street_names[idx as usize].clone())
+            } else {
+                None
+            }
+        });
+
+        let tag_metadata = self.metadata_indices.as_ref().map(|indices| {
+            let mut tags = BTreeMap::new();
+            for &(key_idx, value_idx) in indices {
+                if (key_idx as usize) < metadata.tag_keys.len()
+                    && (value_idx as usize) < metadata.tag_values.len()
+                {
+                    tags.insert(
+                        metadata.tag_keys[key_idx as usize].clone(),
+                        metadata.tag_values[value_idx as usize].clone(),
+                    );
+                }
+            }
+            tags
+        });
+
+        WaySegment {
+            id: self.id,
+            osm_way_id: self.osm_way_id,
+            nodes: self.nodes.clone(),
+            coordinates: self.coordinates.clone(),
+            is_oneway: self.is_oneway,
+            highway_type,
+            max_speed: self.max_speed,
+            connections: self.connections.clone(),
+            name,
+            metadata: tag_metadata,
+        }
+    }
+}
+
+// Storage for local graph data within a tile
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TileGraph {
+    pub nodes: Vec<u64>,             // Segment IDs
+    pub edges: Vec<(u64, u64, f64)>, // (from, to, cost)
 }
 
 // Chunk metadata for streaming processing
@@ -233,17 +411,11 @@ impl OSMProcessor {
             self.build_connectivity_parallel(&temp_dir, &segment_files, &mp)?;
 
         // Step 5: Generate tiles (in parallel)
-        info!("Step 5: Generating adaptive tiles in parallel");
+        info!("Step 5: Generating adaptive tiles with metadata and graph in parallel");
         self.generate_tiles_parallel(&temp_dir, &connected_segment_files, output_dir, &mp)?;
 
         // Step 6: Write scratch file
         self.update_segment_id_counter()?;
-
-        // // Cleanup temporary files (optional, comment out to keep for debugging)
-        // if self.temp_dir.is_none() {
-        //     info!("Cleaning up temporary files");
-        //     std::fs::remove_dir_all(&temp_dir)?;
-        // }
 
         info!("OSM processing completed in {:?}", start_time.elapsed());
         Ok(())
@@ -1248,21 +1420,23 @@ impl OSMProcessor {
     ) -> Result<()> {
         let start_time = Instant::now();
 
-        // Create progress bars
+        // Create output directory
+        std::fs::create_dir_all(output_dir)?;
+
+        // Load all segments in parallel, build tiles, and write in parallel
+        let all_tiles: Arc<Mutex<HashMap<String, Vec<WaySegment>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let all_segment_tile_map: Arc<Mutex<HashMap<u64, String>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let segment_count = Arc::new(AtomicUsize::new(0));
+
+        // Progress bars for tile generation and writing
         let pb = mp.add(ProgressBar::new(connected_segment_files.len() as u64));
         pb.set_style(ProgressStyle::default_bar()
             .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} ({eta}) - Loading segments for tiling")?
             .progress_chars("##-"));
 
-        // Create output directory
-        std::fs::create_dir_all(output_dir)?;
-
-        // Load all segments in parallel, build tiles, and write in parallel
-        let all_tiles = Arc::new(Mutex::new(HashMap::new()));
-        let all_segment_tile_map = Arc::new(Mutex::new(HashMap::new()));
-        let segment_count = Arc::new(AtomicUsize::new(0));
-
-        // Process segment files in parallel
+        // Process segment files in parallel to create tiles
         connected_segment_files
             .par_iter()
             .for_each(|connected_file| {
@@ -1374,11 +1548,25 @@ impl OSMProcessor {
                     }
                 }
 
+                // Create metadata for this tile
+                let mut metadata = TileMetadata::new();
+
+                // Optimize segments and build local graph
+                let optimized_segments: Vec<OptimizedWaySegment> = segments
+                    .iter()
+                    .map(|segment| OptimizedWaySegment::from_way_segment(segment, &mut metadata))
+                    .collect();
+
+                // Build the local graph for this tile
+                let tile_graph = self.build_road_network(&segments)?;
+
                 let tile_index = TileIndex {
                     tile_id: tile_id.clone(),
                     bbox,
-                    road_segments: segments,
+                    road_segments: optimized_segments, // Store optimized segments
                     segment_index,
+                    metadata,                     // Include metadata
+                    tile_graph: Some(tile_graph), // Include local graph
                 };
 
                 tiles_to_write.push((tile_id, tile_index));
@@ -1400,12 +1588,215 @@ impl OSMProcessor {
         write_pb.finish_with_message("Tile writing complete");
 
         info!(
-            "Generated {} tiles with adaptive sizing in parallel in {:?}",
+            "Generated {} tiles with adaptive sizing, metadata, and graphs in parallel in {:?}",
             tiles_to_write.len(),
             start_time.elapsed()
         );
 
         Ok(())
+    }
+
+    pub(crate) fn build_road_network(&self, segments: &[WaySegment]) -> Result<TileGraph> {
+        let mut graph: DiGraphMap<u64, f64> = DiGraphMap::new();
+        let mut segment_map = HashMap::new();
+
+        // Collect all segments
+        for segment in segments {
+            segment_map.insert(segment.id, segment.clone());
+        }
+
+        // Build comprehensive node-to-segment mapping
+        let mut node_to_segments: HashMap<u64, Vec<u64>> = HashMap::new();
+
+        // Track all nodes, not just endpoints
+        for segment in segment_map.values() {
+            for &node_id in &segment.nodes {
+                node_to_segments
+                    .entry(node_id)
+                    .or_default()
+                    .push(segment.id);
+            }
+        }
+
+        // First add the explicit connections from segment data
+        for segment in segment_map.values() {
+            for &connected_segment_id in &segment.connections {
+                if !graph.contains_edge(segment.id, connected_segment_id) {
+                    // Calculate transition cost
+                    let cost = if let Some(conn_segment) = segment_map.get(&connected_segment_id) {
+                        // Find a common node for entry
+                        let common_nodes: Vec<u64> = segment
+                            .nodes
+                            .iter()
+                            .filter(|&&n| conn_segment.nodes.contains(&n))
+                            .cloned()
+                            .collect();
+
+                        // Use the first common node or None if no common node
+                        let entry_node = common_nodes.first().cloned();
+
+                        calculate_transition_cost(segment, conn_segment, entry_node, None)
+                    } else {
+                        // Default cost
+                        1.0
+                    };
+
+                    graph.add_edge(segment.id, connected_segment_id, cost);
+                    if !segment.is_oneway {
+                        graph.add_edge(connected_segment_id, segment.id, cost);
+                    }
+                }
+            }
+        }
+
+        // Track connectivity additions for reporting
+        let mut added_endpoint_connections = 0;
+        let mut added_intermediate_connections = 0;
+
+        // Now check for shared nodes that might have been missed in explicit connections
+        for (&node_id, connected_segments) in &node_to_segments {
+            if connected_segments.len() > 1 {
+                // This node connects multiple segments
+                for (i, &segment_id) in connected_segments.iter().enumerate() {
+                    for &other_segment_id in connected_segments.iter().skip(i + 1) {
+                        // Skip if there's already an edge
+                        if graph.contains_edge(segment_id, other_segment_id) {
+                            continue;
+                        }
+
+                        // Get the segment objects
+                        if let (Some(segment), Some(other_segment)) = (
+                            segment_map.get(&segment_id),
+                            segment_map.get(&other_segment_id),
+                        ) {
+                            // Check if segments are compatible for connection
+                            if !check_segment_connectivity(segment, other_segment).0 {
+                                continue;
+                            }
+
+                            // Check the position of the shared node in each segment
+                            let is_segment_endpoint = *segment.nodes.first().unwrap() == node_id
+                                || *segment.nodes.last().unwrap() == node_id;
+
+                            let is_other_endpoint = *other_segment.nodes.first().unwrap()
+                                == node_id
+                                || *other_segment.nodes.last().unwrap() == node_id;
+
+                            // Prepare for entry node calculation
+                            let entry_node = Some(node_id);
+
+                            // Case 1: Both segments have this node as an endpoint (standard case)
+                            if is_segment_endpoint && is_other_endpoint {
+                                let cost = calculate_transition_cost(
+                                    segment,
+                                    other_segment,
+                                    entry_node,
+                                    None,
+                                );
+                                graph.add_edge(segment_id, other_segment_id, cost);
+                                added_endpoint_connections += 1;
+                                continue;
+                            }
+
+                            // Case 2: Endpoint connecting to an intermediate node (intersection)
+                            if is_segment_endpoint || is_other_endpoint {
+                                // For cases where a road endpoint meets another road at an intersection
+                                // This is a legitimate connection - create a path from endpoint to midpoint
+                                let cost = calculate_transition_cost(
+                                    segment,
+                                    other_segment,
+                                    entry_node,
+                                    None,
+                                );
+                                graph.add_edge(segment_id, other_segment_id, cost);
+                                added_intermediate_connections += 1;
+                                continue;
+                            }
+
+                            // Case 3: Both nodes are intermediate
+                            // This is the trickiest case - need to check if this is actually
+                            // an intersection rather than just two roads passing over each other
+
+                            // First check if these segments are from the same OSM way
+                            // In that case, they definitely should connect
+                            if segment.osm_way_id == other_segment.osm_way_id {
+                                let cost = calculate_transition_cost(
+                                    segment,
+                                    other_segment,
+                                    entry_node,
+                                    None,
+                                );
+                                graph.add_edge(segment_id, other_segment_id, cost);
+                                added_intermediate_connections += 1;
+                                continue;
+                            }
+
+                            // For different OSM ways, check other factors that suggest connectivity
+
+                            // 1. Compare the road names - if they're the same, likely connected
+                            let same_name = match (&segment.name, &other_segment.name) {
+                                (Some(name1), Some(name2)) => name1 == name2 && !name1.is_empty(),
+                                _ => false,
+                            };
+
+                            // 2. Check if they share multiple nodes (stronger evidence of connection)
+                            let common_nodes_count = segment
+                                .nodes
+                                .iter()
+                                .filter(|&n| other_segment.nodes.contains(n))
+                                .count();
+
+                            // 3. Get highway types and check if they're compatible
+                            let compatible_roads = are_road_types_compatible(
+                                &segment.highway_type,
+                                &other_segment.highway_type,
+                            );
+
+                            // 4. Use a topological check (do these roads visibly intersect)
+                            let line1 = LineString::from(segment.coordinates.clone());
+                            let line2 = LineString::from(other_segment.coordinates.clone());
+                            let geometry_intersects = line1.intersects(&line2);
+
+                            // If multiple factors suggest connection, connect the segments
+                            let should_connect = (same_name && common_nodes_count > 0)
+                                || (common_nodes_count >= 2)
+                                || (compatible_roads && geometry_intersects);
+
+                            if should_connect {
+                                // Higher cost for this less certain connection
+                                let cost = calculate_transition_cost(
+                                    segment,
+                                    other_segment,
+                                    entry_node,
+                                    None,
+                                ) * 1.5;
+                                graph.add_edge(segment_id, other_segment_id, cost);
+                                added_intermediate_connections += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Log connectivity improvements
+        debug!(
+            "Built road network graph with {} nodes and {} edges",
+            graph.node_count(),
+            graph.edge_count()
+        );
+
+        info!(
+            "Added {} connections between endpoints and {} connections via intermediate nodes",
+            added_endpoint_connections, added_intermediate_connections
+        );
+
+        let tile_graph = TileGraph {
+            edges: graph.all_edges().map(|(n, e, t)| (n, e, *t)).collect(),
+            nodes: graph.nodes().collect(),
+        };
+
+        Ok(tile_graph)
     }
 
     // Helper function to generate tile ID string
@@ -1456,42 +1847,5 @@ impl OSMProcessor {
             current_id
         );
         Ok(())
-    }
-}
-
-pub(crate) fn are_road_types_compatible(type1: &str, type2: &str) -> bool {
-    // Same types are obviously compatible
-    if type1 == type2 {
-        return true;
-    }
-
-    // Define road class groups
-    let highway_classes: Vec<Vec<&str>> = vec![
-        vec!["motorway", "motorway_link"],
-        vec!["trunk", "trunk_link"],
-        vec!["primary", "primary_link"],
-        vec!["secondary", "secondary_link"],
-        vec!["tertiary", "tertiary_link"],
-        vec!["residential", "unclassified", "service"],
-        vec!["track", "path", "footway", "cycleway"],
-    ];
-
-    // Find which class each type belongs to
-    let class1 = highway_classes
-        .iter()
-        .position(|class| class.contains(&type1));
-    let class2 = highway_classes
-        .iter()
-        .position(|class| class.contains(&type2));
-
-    match (class1, class2) {
-        (Some(c1), Some(c2)) => {
-            // Same class or adjacent classes are compatible
-            (c1 as i32 - c2 as i32).abs() <= 1
-        }
-        _ => {
-            // Unknown type, be conservative
-            false
-        }
     }
 }

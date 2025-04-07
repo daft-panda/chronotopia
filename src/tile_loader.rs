@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
 
-use crate::osm_preprocessing::{TileIndex, WaySegment};
+use crate::osm_preprocessing::{TileGraph, TileIndex, WaySegment};
 use crate::route_matcher::TileConfig;
 
 // Optimization: Add cache statistics for monitoring
@@ -452,19 +452,35 @@ impl TileLoader {
         // Find which tile contains this segment
         let tile_id = self.find_segment_tile(seg_id)?;
 
-        // Load the tile and get the segment
-        let segment = {
-            let tile = self.load_tile(&tile_id)?;
+        // Load the tile
+        let tile = self.load_tile(&tile_id)?;
 
-            // Clone the segment we need
-            tile.road_segments
-                .iter()
-                .find(|s| s.id == seg_id)
-                .cloned()
-                .ok_or_else(|| anyhow!("Segment {} missing from tile {}", seg_id, tile_id))?
-        };
+        // Find the optimized segment
+        let opt_segment = tile
+            .road_segments
+            .iter()
+            .find(|s| s.id == seg_id)
+            .ok_or_else(|| anyhow!("Segment {} missing from tile {}", seg_id, tile_id))?;
 
-        Ok(segment)
+        // Convert the optimized segment back to a full WaySegment using the tile's metadata
+        Ok(opt_segment.to_way_segment(&tile.metadata))
+    }
+
+    // Add a method to access the tile's graph data
+    pub fn get_tile_graph(&mut self, tile_id: &str) -> Result<Option<&TileGraph>> {
+        let tile = self.load_tile(tile_id)?;
+        Ok(tile.tile_graph.as_ref())
+    }
+
+    // Additional utility function to get all segments from a tile, converting them from optimized format
+    pub fn get_all_segments_from_tile(&mut self, tile_id: &str) -> Result<Vec<WaySegment>> {
+        let tile = self.load_tile(tile_id)?;
+
+        Ok(tile
+            .road_segments
+            .iter()
+            .map(|opt_segment| opt_segment.to_way_segment(&tile.metadata))
+            .collect())
     }
 
     /// Get cache statistics

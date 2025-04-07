@@ -1,7 +1,8 @@
 mod debug;
 mod io;
 mod osm_preprocessing;
-mod route_matcher; // New route-based matching implementation
+mod route_matcher;
+mod routing;
 mod tile_loader;
 
 use std::collections::{HashMap, HashSet};
@@ -866,7 +867,7 @@ impl Chronotopia for ChronotopiaService {
         let mut segments_in_radius = HashSet::new();
         let mut connections_count = HashMap::new();
         let mut route_matcher = self.route_matcher.lock().await;
-        let segments: Vec<String> = route_matcher
+        let loaded_tiles: Vec<String> = route_matcher
             .tile_loader
             .loaded_tiles
             .keys()
@@ -874,13 +875,13 @@ impl Chronotopia for ChronotopiaService {
             .collect();
 
         // Collect segments in radius
-        for tile_id in segments {
-            let tile = route_matcher
+        for tile_id in loaded_tiles {
+            let road_segments = route_matcher
                 .tile_loader
-                .load_tile(&tile_id)
-                .map_err(|e| Status::from_error(e.into()))?;
+                .get_all_segments_from_tile(&tile_id)
+                .map_err(|e| Status::internal(e.to_string()))?;
 
-            for segment in &tile.road_segments {
+            for segment in road_segments {
                 // Check if segment is within radius
                 let segment_center = segment.centroid();
                 let distance = Haversine.distance(Point::new(point.lon, point.lat), segment_center);

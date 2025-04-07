@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 use core::f64;
-use geo::{Closest, ClosestPoint, Haversine, Intersects, LineString, algorithm::Distance};
+use geo::{Closest, ClosestPoint, Haversine, LineString, algorithm::Distance};
 use geo_types::Point;
 use log::{debug, info, trace, warn};
 use ordered_float::OrderedFloat;
@@ -13,15 +13,17 @@ use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
+    time::Instant,
 };
 
 use crate::{
-    osm_preprocessing::{OSMProcessor, TileIndex, WaySegment, are_road_types_compatible},
+    osm_preprocessing::{OSMProcessor, WaySegment},
+    routing::{calculate_transition_cost, check_segment_connectivity},
     tile_loader::TileLoader,
 };
 
-const MAX_DISTANCE_BETWEEN_POINT_AND_MATCHED_ROUTE_METER: f64 = 150.0;
-const DISTANCE_THRESHOLD_FOR_COST_BIAS_METER: f64 = 10.0;
+pub(crate) const MAX_DISTANCE_BETWEEN_POINT_AND_MATCHED_ROUTE_METER: f64 = 150.0;
+pub(crate) const DISTANCE_THRESHOLD_FOR_COST_BIAS_METER: f64 = 10.0;
 
 #[derive(Debug, Clone)]
 pub struct TileConfig {
@@ -621,6 +623,90 @@ impl RouteMatcher {
         Ok(route)
     }
 
+    // Completely replace the build_road_network method to use tile graphs
+    pub(crate) fn build_road_network(
+        &mut self,
+        loaded_tiles: &HashSet<String>,
+    ) -> Result<(DiGraphMap<u64, f64>, HashMap<u64, WaySegment>)> {
+        let start_time = Instant::now();
+
+        // Create a new graph that will combine data from all loaded tiles
+        let mut graph = DiGraphMap::new();
+        let mut segment_map = HashMap::new();
+
+        // First pass: Add all segments and their local graph edges to the graph
+        for tile_id in loaded_tiles {
+            // Load tile and add its segments to the map
+            let tile = self.tile_loader.load_tile(tile_id)?;
+
+            // Convert optimized segments to regular segments and add to segment map
+            for opt_segment in &tile.road_segments {
+                let segment = opt_segment.to_way_segment(&tile.metadata);
+                segment_map.insert(segment.id, segment);
+            }
+
+            // Add edges from the tile's local graph to the combined graph
+            if let Some(tile_graph) = &tile.tile_graph {
+                for &(from, to, cost) in &tile_graph.edges {
+                    // Verify that both segments are in our segment map
+                    if segment_map.contains_key(&from) && segment_map.contains_key(&to) {
+                        graph.add_edge(from, to, cost);
+                    }
+                }
+            }
+        }
+
+        // Second pass: Add connections between segments in different tiles
+        // These connections would not have been included in any single tile's graph
+        for (&segment_id, segment) in &segment_map {
+            for &connected_id in &segment.connections {
+                // Skip if we've already added this edge (e.g., from a tile's local graph)
+                if graph.contains_edge(segment_id, connected_id) {
+                    continue;
+                }
+
+                // Skip if the connected segment isn't in our loaded tiles
+                if !segment_map.contains_key(&connected_id) {
+                    continue;
+                }
+
+                // This is a cross-tile connection that we need to add
+                let connected_segment = &segment_map[&connected_id];
+
+                // Find common nodes to determine connection cost
+                let common_nodes: Vec<u64> = segment
+                    .nodes
+                    .iter()
+                    .filter(|&&n| connected_segment.nodes.contains(&n))
+                    .cloned()
+                    .collect();
+
+                // Use the first common node for entry (if any)
+                let entry_node = common_nodes.first().cloned();
+
+                // Calculate transition cost
+                let cost = calculate_transition_cost(segment, connected_segment, entry_node, None);
+
+                // Add the edge to the combined graph
+                graph.add_edge(segment_id, connected_id, cost);
+
+                // If the segment is bidirectional, add reverse edge too (but only if target isn't one-way)
+                if !segment.is_oneway && !connected_segment.is_oneway && !graph.contains_edge(connected_id, segment_id) {
+                    graph.add_edge(connected_id, segment_id, cost);
+                }
+            }
+        }
+
+        debug!(
+            "Built combined road network graph with {} nodes and {} edges in {:?}",
+            graph.node_count(),
+            graph.edge_count(),
+            start_time.elapsed()
+        );
+
+        Ok((graph, segment_map))
+    }
+
     /// Find all candidate segments within accuracy range for each GPS point
     pub(crate) fn find_all_candidate_segments(
         &mut self,
@@ -677,10 +763,7 @@ impl RouteMatcher {
         // Collect all available segments from loaded tiles
         for tile_id in loaded_tiles {
             // Load tile and process segments
-            let segments = {
-                let tile = self.tile_loader.load_tile(tile_id)?;
-                tile.road_segments.clone()
-            };
+            let segments = self.tile_loader.get_all_segments_from_tile(tile_id)?;
 
             for segment in segments {
                 // For each segment, calculate distance to each of its nodes
@@ -2691,423 +2774,6 @@ impl RouteMatcher {
     }
 
     /// Build road network graph for path finding
-    pub(crate) fn build_road_network(
-        &mut self,
-        loaded_tiles: &HashSet<String>,
-    ) -> Result<(DiGraphMap<u64, f64>, HashMap<u64, WaySegment>)> {
-        let mut graph = DiGraphMap::new();
-        let mut segment_map = HashMap::new();
-
-        // Collect all segments
-        for tile_id in loaded_tiles {
-            let tile = self.tile_loader.load_tile(tile_id)?;
-
-            for segment in &tile.road_segments {
-                segment_map.insert(segment.id, segment.clone());
-            }
-        }
-
-        // Build comprehensive node-to-segment mapping
-        let mut node_to_segments: HashMap<u64, Vec<u64>> = HashMap::new();
-
-        // Track all nodes, not just endpoints
-        for segment in segment_map.values() {
-            for &node_id in &segment.nodes {
-                node_to_segments
-                    .entry(node_id)
-                    .or_default()
-                    .push(segment.id);
-            }
-        }
-
-        // First add the explicit connections from segment data
-        for segment in segment_map.values() {
-            for &connected_segment_id in &segment.connections {
-                if !graph.contains_edge(segment.id, connected_segment_id) {
-                    // Calculate transition cost
-                    let cost = if let Some(conn_segment) = segment_map.get(&connected_segment_id) {
-                        // Find a common node for entry
-                        let common_nodes: Vec<u64> = segment
-                            .nodes
-                            .iter()
-                            .filter(|&&n| conn_segment.nodes.contains(&n))
-                            .cloned()
-                            .collect();
-
-                        // Use the first common node or None if no common node
-                        let entry_node = common_nodes.first().cloned();
-
-                        calculate_transition_cost(segment, conn_segment, entry_node, None)
-                    } else {
-                        // Default cost
-                        1.0
-                    };
-
-                    graph.add_edge(segment.id, connected_segment_id, cost);
-                    if !segment.is_oneway {
-                        graph.add_edge(connected_segment_id, segment.id, cost);
-                    }
-                }
-            }
-        }
-
-        // Track connectivity additions for reporting
-        let mut added_endpoint_connections = 0;
-        let mut added_intermediate_connections = 0;
-
-        // Now check for shared nodes that might have been missed in explicit connections
-        for (&node_id, connected_segments) in &node_to_segments {
-            if connected_segments.len() > 1 {
-                // This node connects multiple segments
-                for (i, &segment_id) in connected_segments.iter().enumerate() {
-                    for &other_segment_id in connected_segments.iter().skip(i + 1) {
-                        // Skip if there's already an edge
-                        if graph.contains_edge(segment_id, other_segment_id) {
-                            continue;
-                        }
-
-                        // Get the segment objects
-                        if let (Some(segment), Some(other_segment)) = (
-                            segment_map.get(&segment_id),
-                            segment_map.get(&other_segment_id),
-                        ) {
-                            // Check if segments are compatible for connection
-                            if !self.check_segment_connectivity(segment, other_segment).0 {
-                                continue;
-                            }
-
-                            // Check the position of the shared node in each segment
-                            let is_segment_endpoint = *segment.nodes.first().unwrap() == node_id
-                                || *segment.nodes.last().unwrap() == node_id;
-
-                            let is_other_endpoint = *other_segment.nodes.first().unwrap()
-                                == node_id
-                                || *other_segment.nodes.last().unwrap() == node_id;
-
-                            // Prepare for entry node calculation
-                            let entry_node = Some(node_id);
-
-                            // Case 1: Both segments have this node as an endpoint (standard case)
-                            if is_segment_endpoint && is_other_endpoint {
-                                let cost = calculate_transition_cost(
-                                    segment,
-                                    other_segment,
-                                    entry_node,
-                                    None,
-                                );
-                                graph.add_edge(segment_id, other_segment_id, cost);
-                                added_endpoint_connections += 1;
-                                continue;
-                            }
-
-                            // Case 2: Endpoint connecting to an intermediate node (intersection)
-                            if is_segment_endpoint || is_other_endpoint {
-                                // For cases where a road endpoint meets another road at an intersection
-                                // This is a legitimate connection - create a path from endpoint to midpoint
-                                let cost = calculate_transition_cost(
-                                    segment,
-                                    other_segment,
-                                    entry_node,
-                                    None,
-                                );
-                                graph.add_edge(segment_id, other_segment_id, cost);
-                                added_intermediate_connections += 1;
-                                continue;
-                            }
-
-                            // Case 3: Both nodes are intermediate
-                            // This is the trickiest case - need to check if this is actually
-                            // an intersection rather than just two roads passing over each other
-
-                            // First check if these segments are from the same OSM way
-                            // In that case, they definitely should connect
-                            if segment.osm_way_id == other_segment.osm_way_id {
-                                let cost = calculate_transition_cost(
-                                    segment,
-                                    other_segment,
-                                    entry_node,
-                                    None,
-                                );
-                                graph.add_edge(segment_id, other_segment_id, cost);
-                                added_intermediate_connections += 1;
-                                continue;
-                            }
-
-                            // For different OSM ways, check other factors that suggest connectivity
-
-                            // 1. Compare the road names - if they're the same, likely connected
-                            let same_name = match (&segment.name, &other_segment.name) {
-                                (Some(name1), Some(name2)) => name1 == name2 && !name1.is_empty(),
-                                _ => false,
-                            };
-
-                            // 2. Check if they share multiple nodes (stronger evidence of connection)
-                            let common_nodes_count = segment
-                                .nodes
-                                .iter()
-                                .filter(|&n| other_segment.nodes.contains(n))
-                                .count();
-
-                            // 3. Get highway types and check if they're compatible
-                            let compatible_roads = are_road_types_compatible(
-                                &segment.highway_type,
-                                &other_segment.highway_type,
-                            );
-
-                            // 4. Use a topological check (do these roads visibly intersect)
-                            let line1 = LineString::from(segment.coordinates.clone());
-                            let line2 = LineString::from(other_segment.coordinates.clone());
-                            let geometry_intersects = line1.intersects(&line2);
-
-                            // If multiple factors suggest connection, connect the segments
-                            let should_connect = (same_name && common_nodes_count > 0)
-                                || (common_nodes_count >= 2)
-                                || (compatible_roads && geometry_intersects);
-
-                            if should_connect {
-                                // Higher cost for this less certain connection
-                                let cost = calculate_transition_cost(
-                                    segment,
-                                    other_segment,
-                                    entry_node,
-                                    None,
-                                ) * 1.5;
-                                graph.add_edge(segment_id, other_segment_id, cost);
-                                added_intermediate_connections += 1;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Log connectivity improvements
-        debug!(
-            "Built road network graph with {} nodes and {} edges",
-            graph.node_count(),
-            graph.edge_count()
-        );
-
-        info!(
-            "Added {} connections between endpoints and {} connections via intermediate nodes",
-            added_endpoint_connections, added_intermediate_connections
-        );
-
-        Ok((graph, segment_map))
-    }
-
-    /// Check if two segments should be connected based on their properties and spatial relationship
-    /// Returns (is_compatible, should_connect, reason)
-    /// - is_compatible: True if segments have compatible properties (layers, road types)
-    /// - should_connect: True if segments should be connected in the network
-    /// - reason: Detailed explanation of the result
-    fn check_segment_connectivity(
-        &self,
-        segment1: &WaySegment,
-        segment2: &WaySegment,
-    ) -> (bool, bool, String) {
-        // 1. Check for layer differences
-        let layer1 = segment1
-            .metadata
-            .as_ref()
-            .and_then(|m| m.get("layer").map(|l| l.parse::<i8>().unwrap_or(0)))
-            .unwrap_or(0);
-
-        let layer2 = segment2
-            .metadata
-            .as_ref()
-            .and_then(|m| m.get("layer").map(|l| l.parse::<i8>().unwrap_or(0)))
-            .unwrap_or(0);
-
-        if layer1 != layer2 {
-            return (
-                false,
-                false,
-                format!("Segments are on different layers: {} vs {}", layer1, layer2),
-            );
-        }
-
-        // 2. Check bridge/tunnel status
-        let is_bridge1 = segment1
-            .metadata
-            .as_ref()
-            .and_then(|m| m.get("bridge").map(|v| v == "yes"))
-            .unwrap_or(false);
-
-        let is_bridge2 = segment2
-            .metadata
-            .as_ref()
-            .and_then(|m| m.get("bridge").map(|v| v == "yes"))
-            .unwrap_or(false);
-
-        if is_bridge1 != is_bridge2 {
-            return (
-                false,
-                false,
-                format!(
-                    "Bridge mismatch: {} is {}a bridge, {} is {}a bridge",
-                    segment1.id,
-                    if is_bridge1 { "" } else { "not " },
-                    segment2.id,
-                    if is_bridge2 { "" } else { "not " }
-                ),
-            );
-        }
-
-        let is_tunnel1 = segment1
-            .metadata
-            .as_ref()
-            .and_then(|m| m.get("tunnel").map(|v| v == "yes"))
-            .unwrap_or(false);
-
-        let is_tunnel2 = segment2
-            .metadata
-            .as_ref()
-            .and_then(|m| m.get("tunnel").map(|v| v == "yes"))
-            .unwrap_or(false);
-
-        if is_tunnel1 != is_tunnel2 {
-            return (
-                false,
-                false,
-                format!(
-                    "Tunnel mismatch: {} is {}a tunnel, {} is {}a tunnel",
-                    segment1.id,
-                    if is_tunnel1 { "" } else { "not " },
-                    segment2.id,
-                    if is_tunnel2 { "" } else { "not " }
-                ),
-            );
-        }
-
-        // 3. Check road type compatibility
-        let compatible_types =
-            are_road_types_compatible(&segment1.highway_type, &segment2.highway_type);
-
-        if !compatible_types {
-            return (
-                false,
-                false,
-                format!(
-                    "Incompatible road types: {} ({}) and {} ({})",
-                    segment1.highway_type, segment1.id, segment2.highway_type, segment2.id
-                ),
-            );
-        }
-
-        // 4. Check traffic direction compatibility
-        if segment1.is_oneway && segment2.is_oneway {
-            // Additional checks could be performed here for direction compatibility
-        }
-
-        // 5. Now check if they should actually connect (spatial relationship)
-
-        // First check for shared nodes - this is the most reliable indicator
-        let mut shared_nodes = Vec::new();
-        for node_id in &segment1.nodes {
-            if segment2.nodes.contains(node_id) {
-                shared_nodes.push(*node_id);
-            }
-        }
-
-        if !shared_nodes.is_empty() {
-            // Also check if these shared nodes are at endpoints
-            let is_endpoint1 = shared_nodes.iter().any(|&node_id| {
-                *segment1.nodes.first().unwrap() == node_id
-                    || *segment1.nodes.last().unwrap() == node_id
-            });
-
-            let is_endpoint2 = shared_nodes.iter().any(|&node_id| {
-                *segment2.nodes.first().unwrap() == node_id
-                    || *segment2.nodes.last().unwrap() == node_id
-            });
-
-            let endpoint_info = if is_endpoint1 && is_endpoint2 {
-                " (shared endpoint nodes)"
-            } else {
-                " (shared intermediate nodes)"
-            };
-
-            return (
-                true,
-                true,
-                format!(
-                    "They share {} node(s): {:?}{}",
-                    shared_nodes.len(),
-                    shared_nodes,
-                    endpoint_info
-                ),
-            );
-        }
-
-        // Check for points that are very close to each other
-        const CLOSE_DISTANCE_THRESHOLD: f64 = 1.0; // meters
-
-        let seg1_start = segment1.coordinates.first().unwrap();
-        let seg1_end = segment1.coordinates.last().unwrap();
-        let seg2_start = segment2.coordinates.first().unwrap();
-        let seg2_end = segment2.coordinates.last().unwrap();
-
-        // Check all endpoint combinations for close proximity
-        let start_start_point = Point::new(seg1_start.x, seg1_start.y);
-        let start_start_dist =
-            Haversine.distance(start_start_point, Point::new(seg2_start.x, seg2_start.y));
-        if start_start_dist < CLOSE_DISTANCE_THRESHOLD {
-            return (
-                true,
-                true,
-                format!("Start points are very close ({:.2}m)", start_start_dist),
-            );
-        }
-
-        let start_end_dist =
-            Haversine.distance(start_start_point, Point::new(seg2_end.x, seg2_end.y));
-        if start_end_dist < CLOSE_DISTANCE_THRESHOLD {
-            return (
-                true,
-                true,
-                format!(
-                    "Start point of #1 is close to end point of #2 ({:.2}m)",
-                    start_end_dist
-                ),
-            );
-        }
-
-        let end_start_point = Point::new(seg1_end.x, seg1_end.y);
-        let end_start_dist =
-            Haversine.distance(end_start_point, Point::new(seg2_start.x, seg2_start.y));
-        if end_start_dist < CLOSE_DISTANCE_THRESHOLD {
-            return (
-                true,
-                true,
-                format!(
-                    "End point of #1 is close to start point of #2 ({:.2}m)",
-                    end_start_dist
-                ),
-            );
-        }
-
-        let end_end_dist = Haversine.distance(end_start_point, Point::new(seg2_end.x, seg2_end.y));
-        if end_end_dist < CLOSE_DISTANCE_THRESHOLD {
-            return (
-                true,
-                true,
-                format!("End points are very close ({:.2}m)", end_end_dist),
-            );
-        }
-
-        // Create LineStrings for intersection check
-        let line1 = LineString::from(segment1.coordinates.clone());
-        let line2 = LineString::from(segment2.coordinates.clone());
-
-        // Check if lines intersect
-        if line1.intersects(&line2) {
-            return (true, true, "Lines geometrically intersect".to_string());
-        }
-
-        // At this point, segments are compatible but don't appear to connect
-        (true, false, "No connection criteria met".to_string())
-    }
 
     /// Calculate bounding box for the trace
     fn calculate_trace_bbox(&self, points: &[Point<f64>]) -> geo::Rect<f64> {
@@ -3275,9 +2941,9 @@ impl RouteMatcher {
             let mut way_segment: Option<WaySegment> = None;
 
             for tile_id in loaded_tiles {
-                let tile = self.tile_loader.load_tile(tile_id)?;
+                let segments = self.tile_loader.get_all_segments_from_tile(tile_id)?;
                 // Now search by osm_way_id instead of id
-                if let Some(segment) = tile.road_segments.iter().find(|s| s.osm_way_id == way_id) {
+                if let Some(segment) = segments.iter().find(|s| s.osm_way_id == way_id) {
                     way_exists = true;
                     way_segment = Some(segment.clone());
                     info!(
@@ -3353,7 +3019,7 @@ impl RouteMatcher {
     }
 
     // Analyze the connectivity for the entire way sequence. As such the ways must be in the expected order.
-    pub fn check_way_sequence_connectivity(&self, way_ids: &[u64]) -> Result<Vec<String>> {
+    pub fn check_way_sequence_connectivity(&mut self, way_ids: &[u64]) -> Result<Vec<String>> {
         if way_ids.len() < 2 {
             return Err(anyhow!("Need at least 2 way IDs to check connectivity"));
         }
@@ -3438,8 +3104,7 @@ impl RouteMatcher {
                     }
 
                     // Check if they should be connected (segments that intersect or share endpoints)
-                    let (should_connect, _, _) =
-                        self.check_segment_connectivity(segment1, segment2);
+                    let (should_connect, _, _) = check_segment_connectivity(segment1, segment2);
                     if should_connect && !connected {
                         connection_issues.push(format!(
                             "Segments {} and {} should be connected: {}",
@@ -3488,14 +3153,19 @@ impl RouteMatcher {
     }
 
     // Helper function to find all segments with a specific OSM way ID
-    fn find_segments_by_osm_way_id(&self, osm_way_id: u64) -> Result<Vec<(WaySegment, String)>> {
+    fn find_segments_by_osm_way_id(
+        &mut self,
+        osm_way_id: u64,
+    ) -> Result<Vec<(WaySegment, String)>> {
         let mut segments = Vec::new();
 
         // Search in loaded tiles first for efficiency
-        for (tile_id, tile) in &self.tile_loader.loaded_tiles {
-            for segment in &tile.road_segments {
+        let loaded_tiles = self.tile_loader.loaded_tiles.clone();
+        for (tile_id, tile) in loaded_tiles {
+            let tile_segments = self.tile_loader.get_all_segments_from_tile(&tile_id)?;
+            for segment in tile_segments {
                 if segment.osm_way_id == osm_way_id {
-                    segments.push((segment.clone(), tile_id.clone()));
+                    segments.push((segment, tile_id.clone()));
                 }
             }
         }
@@ -3514,20 +3184,12 @@ impl RouteMatcher {
                 // Only check bin files
                 if path.is_file() && path.extension().is_some_and(|ext| ext == "bin") {
                     let file_name = path.file_stem().unwrap().to_string_lossy();
-
-                    // Load the tile
-                    let tile_bytes = std::fs::read(&path)
-                        .map_err(|e| anyhow!("Failed to read tile file {}: {}", file_name, e))?;
-
-                    let config = bincode::config::standard();
-                    let (tile_index, _): (TileIndex, _) =
-                        bincode::serde::decode_from_slice(&tile_bytes, config)
-                            .map_err(|e| anyhow!("Invalid tile data in {}: {}", file_name, e))?;
+                    let tile_segments = self.tile_loader.get_all_segments_from_tile(&file_name)?;
 
                     // Check segments
-                    for segment in &tile_index.road_segments {
+                    for segment in tile_segments {
                         if segment.osm_way_id == osm_way_id {
-                            segments.push((segment.clone(), file_name.to_string()));
+                            segments.push((segment, file_name.to_string()));
                         }
                     }
                 }
@@ -3691,10 +3353,7 @@ impl RouteMatcher {
         // First try with normal distance
         for tile_id in loaded_tiles {
             // Load tile and process segments
-            let segments = {
-                let tile = self.tile_loader.load_tile(tile_id)?;
-                tile.road_segments.clone()
-            };
+            let segments = self.tile_loader.get_all_segments_from_tile(tile_id)?;
 
             for segment in segments {
                 // Use unified projection function
@@ -3722,10 +3381,7 @@ impl RouteMatcher {
             let extended_max = max_distance * 1.5; // 50% increase
 
             for tile_id in loaded_tiles {
-                let segments = {
-                    let tile = self.tile_loader.load_tile(tile_id)?;
-                    tile.road_segments.clone()
-                };
+                let segments = self.tile_loader.get_all_segments_from_tile(tile_id)?;
 
                 for segment in segments {
                     let (projection, distance, _) = self.project_point_to_segment(point, &segment);
@@ -3797,12 +3453,13 @@ impl RouteMatcher {
     }
 
     /// Get a copy of the current segment map for analysis
-    fn get_segment_map(&self) -> Result<HashMap<u64, WaySegment>> {
+    fn get_segment_map(&mut self) -> Result<HashMap<u64, WaySegment>> {
         let mut segment_map = HashMap::new();
+        let loaded_tiles = self.tile_loader.loaded_tiles.clone();
 
         // Collect all segments from loaded tiles
-        for tile in self.tile_loader.loaded_tiles.values() {
-            for segment in &tile.road_segments {
+        for tile_id in loaded_tiles.keys() {
+            for segment in self.tile_loader.get_all_segments_from_tile(tile_id)? {
                 segment_map.insert(segment.id, segment.clone());
             }
         }
@@ -4518,8 +4175,7 @@ impl RouteMatcher {
                         segment_map.get(&closest_pair.0),
                         segment_map.get(&closest_pair.1),
                     ) {
-                        let (_, should_connect, reason) =
-                            self.check_segment_connectivity(seg1, seg2);
+                        let (_, should_connect, reason) = check_segment_connectivity(seg1, seg2);
                         if should_connect {
                             issues.push(format!(
                                 "Segments should be connected based on proximity, but aren't: {}",
@@ -5601,7 +5257,7 @@ impl RouteMatcher {
         if !directly_connected {
             // If not directly connected, try to figure out why
             let (_compatible, should_connect, reason) =
-                self.check_segment_connectivity(start_segment, end_segment);
+                check_segment_connectivity(start_segment, end_segment);
             if should_connect {
                 debug_info.reason = format!(
                     "Segments should be connected based on: {}, but no connection exists in the graph",
@@ -5612,7 +5268,7 @@ impl RouteMatcher {
             }
 
             // The connectivity issues
-            let (_, _, issues) = self.check_segment_connectivity(start_segment, end_segment);
+            let (_, _, issues) = check_segment_connectivity(start_segment, end_segment);
             if !issues.is_empty() {
                 debug_info.reason = format!("{}. Issues: {}", debug_info.reason, &issues);
             }
@@ -5661,220 +5317,6 @@ impl<K: Ord, V> BinaryHeap<K, V> {
     #[allow(dead_code)]
     fn is_empty(&self) -> bool {
         self.heap.is_empty()
-    }
-}
-
-/// Calculate the traversal cost between two road segments
-///
-/// Parameters:
-/// - from_seg: The segment we're coming from
-/// - to_seg: The segment we're going to
-/// - entry_node: Optional OSM node ID where the segments connect
-/// Calculate the traversal cost between two road segments
-fn calculate_transition_cost(
-    from_seg: &WaySegment,
-    to_seg: &WaySegment,
-    entry_node: Option<u64>,
-    gps_points: Option<&[Point<f64>]>,
-) -> f64 {
-    // Early validation
-    if from_seg.coordinates.is_empty() || to_seg.coordinates.is_empty() {
-        return f64::INFINITY;
-    }
-
-    // Get the connection node ID
-    let connection_node_id = match entry_node {
-        Some(node_id) => node_id,
-        None => {
-            // Find common node IDs between segments
-            let shared_node_ids: Vec<u64> = from_seg
-                .nodes
-                .iter()
-                .filter(|n| to_seg.nodes.contains(n))
-                .cloned()
-                .collect();
-
-            if shared_node_ids.is_empty() {
-                // No shared nodes, cannot establish connection
-                return f64::INFINITY;
-            } else {
-                // Prefer endpoint connections if available
-                let from_last_id = *from_seg.nodes.last().unwrap_or(&0);
-                let to_first_id = *to_seg.nodes.first().unwrap_or(&0);
-
-                if shared_node_ids.contains(&from_last_id) && shared_node_ids.contains(&to_first_id)
-                {
-                    from_last_id // Optimal end-to-start connection
-                } else {
-                    // Just use any shared node ID
-                    shared_node_ids[0]
-                }
-            }
-        }
-    };
-
-    // Find array indices of the connection node ID in both segments
-    let entry_idx = match from_seg.nodes.iter().position(|&n| n == connection_node_id) {
-        Some(idx) => idx,
-        None => return f64::INFINITY, // Node ID not found in from_segment
-    };
-
-    let exit_idx = match to_seg.nodes.iter().position(|&n| n == connection_node_id) {
-        Some(idx) => idx,
-        None => return f64::INFINITY, // Node ID not found in to_segment
-    };
-
-    // Determine the entry point for the from_segment
-
-    // In A* path finding, we're typically coming from some previous segment
-    // For the start of a path, we might enter at any node
-    // For intermediate segments, we typically enter at one node and exit at another
-
-    // We need to handle different cases:
-    // 1. Direct endpoint-to-endpoint connection
-    // 2. Traversal through a segment from one node to another
-
-    // Calculate distance along from_segment between entry and exit points
-    let segment_distance = if entry_idx == exit_idx {
-        // No traversal (enter and exit at same point)
-        0.1 // Minimal cost
-    } else {
-        // We need to sum up distances between consecutive coordinates
-        let mut distance = 0.0;
-
-        // Make sure indices are properly ordered for iteration
-        let (start_idx, end_idx) = if entry_idx <= exit_idx {
-            (entry_idx, exit_idx)
-        } else {
-            (exit_idx, entry_idx)
-        };
-
-        // Walk along the segment coordinates and sum distances
-        for i in start_idx..end_idx {
-            if i + 1 < from_seg.coordinates.len() {
-                let p1 = geo::Point::new(from_seg.coordinates[i].x, from_seg.coordinates[i].y);
-                let p2 =
-                    geo::Point::new(from_seg.coordinates[i + 1].x, from_seg.coordinates[i + 1].y);
-                distance += Haversine.distance(p1, p2);
-            }
-        }
-
-        // Normalize distance to a reasonable cost value
-        (distance / 100.0).max(0.1)
-    };
-
-    // Road type preference factor
-    let road_type_factor = get_road_type_factor(&to_seg.highway_type);
-
-    // Continuity bonus for staying on the same road
-    let continuity_factor = if from_seg.osm_way_id == to_seg.osm_way_id {
-        0.7 // 30% discount
-    } else {
-        1.0
-    };
-
-    // Calculate base cost combines all factors
-    let mut base_cost = (segment_distance * road_type_factor * continuity_factor) + 1.0;
-
-    // Check GPS proximity if points are provided
-    if let Some(points) = gps_points {
-        // Check proximity to the destination segment (to_seg)
-        for point in points {
-            // Project the point to the segment to get the closest point
-            let line = LineString::from(to_seg.coordinates.clone());
-            let closest = line.closest_point(point);
-
-            let projection = match closest {
-                Closest::SinglePoint(p) => p,
-                _ => continue, // Skip if no clear projection
-            };
-
-            let projection_distance = Haversine.distance(*point, projection);
-
-            // If segment is close to a GPS point, apply strong negative cost
-            if projection_distance <= DISTANCE_THRESHOLD_FOR_COST_BIAS_METER {
-                // Apply a significant cost discount if the transition would bring us near a
-                // strong segment candidate
-                base_cost *= 0.1;
-            }
-        }
-    }
-
-    // Return base cost if no GPS proximity bonus applied
-    base_cost
-}
-
-/// Determine the entry and exit indices for traversing a segment
-/// Returns (entry_idx, exit_idx) for the from_segment
-fn determine_traversal_indices(
-    from_seg: &WaySegment,
-    to_seg: &WaySegment,
-    connection_idx: usize,
-) -> (usize, usize) {
-    // For one-way roads, direction is more constrained
-    if from_seg.is_oneway {
-        // For one-way, we typically enter at index 0 and exit at the connection
-        return (0, connection_idx);
-    }
-
-    // For bidirectional roads, we need to determine the most likely entry point
-    // based on the segment's topology
-
-    // Case 1: Connection at start node (index 0)
-    if connection_idx == 0 {
-        // We're exiting at the start, so we must have entered at the end
-        return (from_seg.nodes.len() - 1, connection_idx);
-    }
-
-    // Case 2: Connection at end node
-    if connection_idx == from_seg.nodes.len() - 1 {
-        // We're exiting at the end, so we must have entered at the start
-        return (0, connection_idx);
-    }
-
-    // Case 3: Connection at intermediate node
-    // This is more complex - we need to determine which direction makes more sense
-
-    // If from_seg and to_seg share the same OSM way ID, prefer to continue in same direction
-    if from_seg.osm_way_id == to_seg.osm_way_id {
-        // Look at the to_segment's node index to determine direction
-        let to_conn_idx = to_seg
-            .nodes
-            .iter()
-            .position(|&n| n == from_seg.nodes[connection_idx])
-            .unwrap_or(0);
-
-        if to_conn_idx == 0 {
-            // Entering to_seg at its start, so we likely came from the start of from_seg
-            return (0, connection_idx);
-        } else if to_conn_idx == to_seg.nodes.len() - 1 {
-            // Entering to_seg at its end, so we likely came from the end of from_seg
-            return (from_seg.nodes.len() - 1, connection_idx);
-        }
-    }
-
-    // Default: assume we entered at the start
-    // This is a reasonable fallback for most routing scenarios
-    (0, connection_idx)
-}
-
-/// Get factor for road type preference
-fn get_road_type_factor(highway_type: &str) -> f64 {
-    match highway_type {
-        "motorway" => 0.5,
-        "motorway_link" => 0.6,
-        "trunk" => 0.7,
-        "trunk_link" => 0.8,
-        "primary" => 0.9,
-        "primary_link" => 1.0,
-        "secondary" => 1.2,
-        "secondary_link" => 1.3,
-        "tertiary" => 1.5,
-        "tertiary_link" => 1.6,
-        "residential" => 2.0,
-        "unclassified" => 2.5,
-        "service" => 3.0,
-        _ => 3.5,
     }
 }
 
