@@ -50,12 +50,12 @@ proto3.util.setEnumType(MapMatchingStatus, "chronotopia.MapMatchingStatus", [
  */
 export class RequestParameters extends Message<RequestParameters> {
   /**
-   * @generated from field: optional google.type.DateTime from = 1;
+   * @generated from field: optional chronotopia.DateTime from = 1;
    */
   from?: DateTime;
 
   /**
-   * @generated from field: optional google.type.DateTime to = 2;
+   * @generated from field: optional chronotopia.DateTime to = 2;
    */
   to?: DateTime;
 
@@ -147,7 +147,7 @@ export class Point extends Message<Point> {
   latlon?: LatLon;
 
   /**
-   * @generated from field: google.type.DateTime dateTime = 3;
+   * @generated from field: chronotopia.DateTime dateTime = 3;
    */
   dateTime?: DateTime;
 
@@ -208,12 +208,12 @@ export class Trip extends Message<Trip> {
   points: Point[] = [];
 
   /**
-   * @generated from field: google.type.DateTime start = 2;
+   * @generated from field: chronotopia.DateTime start = 2;
    */
   start?: DateTime;
 
   /**
-   * @generated from field: google.type.DateTime stop = 3;
+   * @generated from field: chronotopia.DateTime stop = 3;
    */
   stop?: DateTime;
 
@@ -300,12 +300,12 @@ export class TripSummary extends Message<TripSummary> {
   index = 0;
 
   /**
-   * @generated from field: google.type.DateTime start = 2;
+   * @generated from field: chronotopia.DateTime start = 2;
    */
   start?: DateTime;
 
   /**
-   * @generated from field: google.type.DateTime end = 3;
+   * @generated from field: chronotopia.DateTime end = 3;
    */
   end?: DateTime;
 
@@ -597,8 +597,6 @@ export class RoadSegment extends Message<RoadSegment> {
   interimEndIdx?: number;
 
   /**
-   * Adding original full segment coordinates for reference
-   *
    * @generated from field: repeated chronotopia.LatLon full_coordinates = 10;
    */
   fullCoordinates: LatLon[] = [];

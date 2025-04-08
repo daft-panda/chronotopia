@@ -1497,7 +1497,7 @@ impl OSMProcessor {
                             for (tile_id, segments) in local_tiles {
                                 tiles
                                     .entry(tile_id)
-                                    .or_insert_with(Vec::new)
+                                    .or_default()
                                     .extend(segments);
                             }
                         }

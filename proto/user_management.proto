@@ -1,0 +1,103 @@
+syntax = "proto3";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+
+package chronotopia;
+
+service UserManagement {
+    // Create a new user
+    rpc CreateUser(CreateUserRequest) returns (User);
+    
+    // Get a specific user by ID
+    rpc GetUser(UserRequest) returns (User);
+    
+    // Get all users (with optional filtering)
+    rpc ListUsers(ListUsersRequest) returns (Users);
+    
+    // Update user details
+    rpc UpdateUser(UpdateUserRequest) returns (User);
+    
+    // Delete a user
+    rpc DeleteUser(UserRequest) returns (google.protobuf.Empty);
+    
+    // Change password (requires old password)
+    rpc ChangePassword(ChangePasswordRequest) returns (google.protobuf.Empty);
+    
+    // Reset password (admin or via token)
+    rpc ResetPassword(ResetPasswordRequest) returns (google.protobuf.Empty);
+    
+    // Request password reset (sends email with token)
+    rpc RequestPasswordReset(RequestPasswordResetRequest) returns (google.protobuf.Empty);
+    
+    // Validate a reset token (before setting a new password)
+    rpc ValidateResetToken(ValidateTokenRequest) returns (google.protobuf.BoolValue);
+}
+
+message User {
+    string id = 1;
+    string first_name = 2;
+    string last_name = 3;
+    optional string user_name = 4;
+    string email = 5;
+    google.protobuf.Timestamp date_created = 6;
+    google.protobuf.Timestamp last_modified = 7;
+    bool active = 8;
+}
+
+message CreateUserRequest {
+    string first_name = 1;
+    string last_name = 2;
+    optional string user_name = 3;
+    string email = 4;
+    string password = 5;
+}
+
+message UserRequest {
+    string id = 1;
+}
+
+message ListUsersRequest {
+    optional string search_term = 1;
+    optional uint32 page = 2;
+    optional uint32 page_size = 3;
+    optional string sort_by = 4;
+    optional bool sort_desc = 5;
+}
+
+message Users {
+    repeated User users = 1;
+    uint32 total_count = 2;
+    uint32 page = 3;
+    uint32 total_pages = 4;
+}
+
+message UpdateUserRequest {
+    string id = 1;
+    optional string first_name = 2;
+    optional string last_name = 3;
+    optional string user_name = 4;
+    optional string email = 5;
+    optional bool active = 6;
+}
+
+message ChangePasswordRequest {
+    string id = 1;
+    string current_password = 2;
+    string new_password = 3;
+}
+
+message ResetPasswordRequest {
+    string id = 1;
+    optional string token = 2;
+    string new_password = 3;
+}
+
+message RequestPasswordResetRequest {
+    string email = 1;
+}
+
+message ValidateTokenRequest {
+    string id = 1;
+    string token = 2;
+}

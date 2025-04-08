@@ -1,9 +1,11 @@
 mod debug;
+mod entity;
 mod io;
 mod osm_preprocessing;
 mod route_matcher;
 mod routing;
 mod tile_loader;
+mod user_management;
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -17,6 +19,7 @@ use io::google_maps_local_timeline::LocationHistoryEntry;
 use log::{debug, info, warn};
 use osm_preprocessing::WaySegment;
 use proto::chronotopia_server::{Chronotopia, ChronotopiaServer};
+use proto::user_management_server::UserManagementServer;
 use proto::{
     ConnectivityRequest, LatLon, MapMatchingStatus, ProcessedTrip, RequestParameters,
     RouteMatchTrace, Trip, TripSummary, Trips, WindowDebugRequest,
@@ -25,6 +28,7 @@ use route_matcher::{
     MatchedWaySegment, PathfindingDebugInfo, PathfindingResult, RouteMatchJob, RouteMatcher,
     RouteMatcherConfig, TileConfig, WindowTrace,
 };
+use sea_orm::{Database, DatabaseConnection};
 use serde_json::json;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
@@ -33,6 +37,7 @@ use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 use tonic_web::GrpcWebLayer;
 use tower_http::cors::{Any, CorsLayer};
+use user_management::UserManagementService;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -43,6 +48,9 @@ async fn main() -> Result<()> {
         .target(env_logger::Target::Stderr)
         .init();
     info!("Starting Chronotopia with Route-Based Matcher");
+
+    let db: DatabaseConnection =
+        Database::connect("postgres://postgres:example@localhost/chronotopia").await?;
 
     // Create configuration for route-based matcher
     let route_matcher_config = RouteMatcherConfig {
@@ -96,6 +104,9 @@ async fn main() -> Result<()> {
 
     let svc = ChronotopiaServer::new(chronotopia_service);
 
+    let user_management_service = UserManagementService::new(db.clone());
+    let user_management_svc = UserManagementServer::new(user_management_service);
+
     let cors = CorsLayer::new()
         .allow_methods([Method::GET, Method::POST])
         .allow_origin(Any)
@@ -107,6 +118,7 @@ async fn main() -> Result<()> {
         .layer(cors)
         .layer(GrpcWebLayer::new())
         .add_service(svc)
+        .add_service(user_management_svc)
         .serve(addr)
         .await
         .unwrap();
