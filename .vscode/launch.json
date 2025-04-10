@@ -1,0 +1,22 @@
+{
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:chronotopia}/app/ios/Runner",
+            "name": "Debug ChronoTopia (app/ios/Runner)",
+            "program": "${workspaceFolder:chronotopia}/app/ios/Runner/.build/debug/ChronoTopia",
+            "preLaunchTask": "swift: Build Debug ChronoTopia (app/ios/Runner)"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:chronotopia}/app/ios/Runner",
+            "name": "Release ChronoTopia (app/ios/Runner)",
+            "program": "${workspaceFolder:chronotopia}/app/ios/Runner/.build/release/ChronoTopia",
+            "preLaunchTask": "swift: Build Release ChronoTopia (app/ios/Runner)"
+        }
+    ]
+}

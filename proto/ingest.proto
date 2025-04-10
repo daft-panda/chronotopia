@@ -1,0 +1,113 @@
+syntax = "proto3";
+import "datetime.proto";
+
+package chronotopia;
+
+service Ingest {
+    rpc SubmitBatch (IngestBatch) returns (IngestResponse);
+    rpc SubmitDeviceMetadata (DeviceMetadata) returns (IngestResponse);
+}
+
+message IngestBatch {  
+  // DateTime when the packet was created
+  DateTime dateTime = 3;
+  
+  // Batch of location points
+  repeated LocationPoint locations = 4;
+  
+  // Batch of activity events
+  repeated ActivityEvent activities = 5;
+  
+  // Batch of visit events
+  repeated VisitEvent visits = 6;
+  
+  // Device metadata
+  DeviceMetadata device_metadata = 7;
+}
+
+// Location point data
+message LocationPoint {
+  // Basic coordinates
+  double latitude = 1;
+  double longitude = 2;
+  double altitude = 3;
+  
+  // Accuracy information
+  double horizontal_accuracy = 4;
+  double vertical_accuracy = 5;
+  double speed_accuracy = 6;
+  double bearing_accuracy = 7;
+  
+  // Motion information
+  double speed = 8;
+  double bearing = 9;
+  
+  // Timestamps
+  DateTime dateTime = 10;
+  
+  // Location provider information
+  string provider = 11;
+  bool is_mock_location = 12;
+  
+  // For indoor positioning (iOS)
+  int32 floor_level = 13;
+  
+  // Device state information
+  int32 battery_level = 14;
+  string network_type = 15;
+}
+
+// Activity recognition event
+message ActivityEvent {
+  enum ActivityType {
+    UNKNOWN = 0;
+    STILL = 1;
+    WALKING = 2;
+    RUNNING = 3;
+    IN_VEHICLE = 4;
+    ON_BICYCLE = 5;
+    ON_FOOT = 6;
+    TILTING = 7;
+  }
+  
+  ActivityType type = 1;
+  int32 confidence = 2;  // 0-100
+  
+  // Timestamps
+  int64 timestamp = 3;
+  int64 start_time = 4;
+  int64 end_time = 5;
+  
+  // Movement data
+  int64 step_count = 6;
+  double distance = 7;
+}
+
+// Visit events (iOS-specific but we'll handle on Android too)
+message VisitEvent {
+  double latitude = 1;
+  double longitude = 2;
+  double horizontal_accuracy = 3;
+  
+  int64 arrival_time = 4;
+  int64 departure_time = 5;
+}
+
+// Device metadata
+message DeviceMetadata {
+  string platform = 1;  // "android" or "ios"
+  string os_version = 2;
+  string app_version = 3;
+  string device_model = 4;
+  string device_language = 5;
+}
+
+// Response to data uploads
+message IngestResponse {
+  bool success = 1;
+  string alert_message = 2;
+  
+  // Optional fields for server instructions
+  bool pause_tracking = 3;
+  int32 recommended_upload_interval = 4;  // in seconds
+}
