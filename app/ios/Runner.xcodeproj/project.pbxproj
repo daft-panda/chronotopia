@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 54;
+	objectVersion = 60;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -25,11 +25,11 @@
 		C0ACF7F52DA836230043A445 /* MethodChannelHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0ACF7F42DA8361F0043A445 /* MethodChannelHandler.swift */; };
 		C0ACF7F62DA83DFC0043A445 /* LocationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0B7B22F2DA726BF00758028 /* LocationManager.swift */; };
 		C0B7B21B2DA7255200758028 /* GRPCNIOTransportHTTP2 in Frameworks */ = {isa = PBXBuildFile; productRef = C0B7B21A2DA7255200758028 /* GRPCNIOTransportHTTP2 */; };
+		C0CFC4DF2DA9CD1600199D66 /* common.pb.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0CFC4DE2DA9CD1600199D66 /* common.pb.swift */; };
 		C0D4334A2DA742EA00B4F962 /* MotionActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D433492DA742E500B4F962 /* MotionActivity.swift */; };
 		C0D4334C2DA7430500B4F962 /* Client.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D4334B2DA7430300B4F962 /* Client.swift */; };
 		C0D4334F2DA7475F00B4F962 /* ingest.grpc.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D4334D2DA7475F00B4F962 /* ingest.grpc.swift */; };
 		C0D433502DA7475F00B4F962 /* ingest.pb.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D4334E2DA7475F00B4F962 /* ingest.pb.swift */; };
-		C0D433522DA7484100B4F962 /* datetime.pb.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D433512DA7484100B4F962 /* datetime.pb.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -79,11 +79,11 @@
 		C0ACF7F42DA8361F0043A445 /* MethodChannelHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MethodChannelHandler.swift; sourceTree = "<group>"; };
 		C0B7B20C2DA7249800758028 /* Runner.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Runner.entitlements; sourceTree = "<group>"; };
 		C0B7B22F2DA726BF00758028 /* LocationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationManager.swift; sourceTree = "<group>"; };
+		C0CFC4DE2DA9CD1600199D66 /* common.pb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = common.pb.swift; sourceTree = "<group>"; };
 		C0D433492DA742E500B4F962 /* MotionActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotionActivity.swift; sourceTree = "<group>"; };
 		C0D4334B2DA7430300B4F962 /* Client.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Client.swift; sourceTree = "<group>"; };
 		C0D4334D2DA7475F00B4F962 /* ingest.grpc.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ingest.grpc.swift; sourceTree = "<group>"; };
 		C0D4334E2DA7475F00B4F962 /* ingest.pb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ingest.pb.swift; sourceTree = "<group>"; };
-		C0D433512DA7484100B4F962 /* datetime.pb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = datetime.pb.swift; sourceTree = "<group>"; };
 		D84BF48E9EBA7AF16FCCF833 /* Pods-RunnerTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.release.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.release.xcconfig"; sourceTree = "<group>"; };
 		F712EFF0BA899CD50E07FB1B /* Pods-Runner.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.release.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.release.xcconfig"; sourceTree = "<group>"; };
 		F80D5CD22FE1C87751FB3BF4 /* Pods_Runner.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_Runner.framework; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -181,12 +181,12 @@
 		97C146F01CF9000F007C117D /* Runner */ = {
 			isa = PBXGroup;
 			children = (
+				C0CFC4DE2DA9CD1600199D66 /* common.pb.swift */,
 				C0ACF7F42DA8361F0043A445 /* MethodChannelHandler.swift */,
 				C0D4334D2DA7475F00B4F962 /* ingest.grpc.swift */,
 				C0D4334E2DA7475F00B4F962 /* ingest.pb.swift */,
 				C0D4334B2DA7430300B4F962 /* Client.swift */,
 				C0D433492DA742E500B4F962 /* MotionActivity.swift */,
-				C0D433512DA7484100B4F962 /* datetime.pb.swift */,
 				C0B7B22F2DA726BF00758028 /* LocationManager.swift */,
 				C0B7B20C2DA7249800758028 /* Runner.entitlements */,
 				97C146FA1CF9000F007C117D /* Main.storyboard */,
@@ -452,8 +452,8 @@
 				C0D4334C2DA7430500B4F962 /* Client.swift in Sources */,
 				C0D4334F2DA7475F00B4F962 /* ingest.grpc.swift in Sources */,
 				C0D433502DA7475F00B4F962 /* ingest.pb.swift in Sources */,
+				C0CFC4DF2DA9CD1600199D66 /* common.pb.swift in Sources */,
 				C0ACF7F52DA836230043A445 /* MethodChannelHandler.swift in Sources */,
-				C0D433522DA7484100B4F962 /* datetime.pb.swift in Sources */,
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
 				C0ACF7F62DA83DFC0043A445 /* LocationManager.swift in Sources */,
 			);

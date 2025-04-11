@@ -1,0 +1,125 @@
+syntax = "proto3";
+package chronotopia;
+
+import "common.proto";
+import "chronotopia.proto";
+import "ingest.proto";
+import "google/protobuf/empty.proto";
+
+service Trips {
+    // Get trips for the authenticated user
+    rpc GetTripsForUser(GetTripsForUserRequest) returns (GetTripsForUserResponse);
+    
+    // Get processing state for the authenticated user
+    rpc GetUserProcessingState(google.protobuf.Empty) returns (GetUserProcessingStateResponse);
+    
+    // Trigger processing for the authenticated user
+    rpc TriggerProcessing(google.protobuf.Empty) returns (TriggerProcessingResponse);
+    
+    // Get detailed trip information
+    rpc GetTripDetails(GetTripDetailsRequest) returns (GetTripDetailsResponse);
+}
+
+// Trip model
+message Trip {
+    UUID id = 1;
+    DateTime start_time = 2;
+    DateTime end_time = 3;
+    double distance_meters = 4;
+    repeated Point points = 5; 
+    bool processed = 6;
+    repeated RoadSegment matched_segments = 7;
+    string geojson = 8;
+    repeated VisitEvent visits = 9;
+    repeated ActivityEvent activities = 10;
+    optional string label = 11;
+    optional string notes = 12;
+    optional RouteMatchTrace route_match_trace = 13;
+}
+
+// Trip list container
+message TripList {
+    repeated Trip trips = 1;
+}
+
+// Import summary model
+message ImportSummary {
+    UUID id = 1;
+    string import_type = 2;
+    DateTime import_date_time = 3;
+    uint32 location_count = 4;
+    uint32 activity_count = 5;
+    uint32 visit_count = 6;
+    uint32 generated_trips = 7;
+    bool processing_complete = 8;
+    DateTime create_date_time = 9;
+    string import_name = 10;
+    optional DateTime processed_date_time = 11;
+}
+
+// Processing state model
+message TripProcessingState {
+    DateTime last_processed_time = 1;
+    uint32 total_trips_generated = 2;
+    uint32 total_visits_detected = 3;
+    DateTime last_updated = 4;
+}
+
+// Request to get trips for a user
+message GetTripsForUserRequest {
+    uint32 limit = 1;
+    optional DateTime from_date = 2;
+    optional DateTime to_date = 3;
+}
+
+// Response with user's trips
+message GetTripsForUserResponse {
+    TripList trips = 1;
+}
+
+// Response with processing state
+message GetUserProcessingStateResponse {
+    TripProcessingState state = 1;
+    repeated ImportSummary imports = 2;
+}
+
+// Response after triggering processing
+message TriggerProcessingResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// Request to get trip details
+message GetTripDetailsRequest {
+    UUID trip_id = 1;
+}
+
+// Response with trip details
+message GetTripDetailsResponse {
+    Trip trip = 1;
+}
+
+message PointConstraint {
+    uint32 point_idx = 1;
+    uint64 segment_id = 2;
+    uint64 way_id = 3;
+    double distance = 4;
+}
+
+message WindowTrace {
+    uint32 start = 1;
+    uint32 end = 2;
+    repeated RoadSegment segments = 3;
+    bool bridge = 4;
+    repeated PointConstraint constraints = 5;
+    bool used_constraints = 6;
+    optional double constraint_score = 7;
+    optional double unconstrained_score = 8;
+    repeated uint64 attempted_way_ids = 9;
+    repeated string debug_notes = 10;
+}
+
+message RouteMatchTrace {
+    repeated WindowTrace windowTraces = 1;
+    repeated string pointCandidates = 2;
+}

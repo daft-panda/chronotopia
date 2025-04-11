@@ -8,6 +8,8 @@ import { createGrpcWebTransport } from "@connectrpc/connect-web";
 import type { GrpcTransportOptions } from "@connectrpc/connect-node";
 import { Chronotopia } from "~/model/chronotopia_connect";
 import { UserManagement } from "~/model/user_management_connect";
+import { Ingest } from "~/model/ingest_connect";
+import { Trips } from "~/model/trips_connect";
 
 // WATCH OUT
 // Even though recent browsers should support it, loading the web GRPC transport at runtime
@@ -33,6 +35,11 @@ export const useApi = () => {
     return (next) => async (req) => {
       if (token.value !== undefined) {
         req.header.append("authorization", token.value);
+      } else {
+        req.header.append(
+          "authorization",
+          "Bearer 1a7727de-8c30-4af9-befc-10681b8d5493"
+        );
       }
 
       const res = await next(req);
@@ -56,9 +63,13 @@ export const useApi = () => {
 
   const api = createPromiseClient(Chronotopia, transport);
   const userManagementApi = createPromiseClient(UserManagement, transport);
+  const ingestApi = createPromiseClient(Ingest, transport);
+  const tripsApi = createPromiseClient(Trips, transport);
 
   return {
     api,
     userManagementApi,
+    ingestApi,
+    tripsApi,
   };
 };

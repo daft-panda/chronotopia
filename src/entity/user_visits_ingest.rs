@@ -7,7 +7,7 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i32,
-    pub batch_id: Uuid,
+    pub batch_id: i32,
     #[sea_orm(column_type = "Double")]
     pub latitude: f64,
     #[sea_orm(column_type = "Double")]
@@ -16,6 +16,8 @@ pub struct Model {
     pub horizontal_accuracy: Option<f64>,
     pub arrival_date_time: DateTimeWithTimeZone,
     pub departure_date_time: DateTimeWithTimeZone,
+    pub canonical_label: Option<String>,
+    pub external_place_id: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

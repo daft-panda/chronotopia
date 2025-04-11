@@ -3,9 +3,10 @@ fn main() {
         .compile_protos(
             &[
                 "proto/chronotopia.proto",
-                "proto/datetime.proto",
+                "proto/common.proto",
                 "proto/user_management.proto",
                 "proto/ingest.proto",
+                "proto/trips.proto",
             ],
             &["proto"],
         )

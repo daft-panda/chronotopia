@@ -20,6 +20,88 @@ fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAP
   typealias Version = _2
 }
 
+/// Source information for Chronotopia App
+struct Chronotopia_ChronotopiaAppSource: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  var appVersion: String = String()
+
+  var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  init() {}
+}
+
+/// Source information for Chronotopia Web
+struct Chronotopia_ChronotopiaWebSource: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  var webVersion: String = String()
+
+  var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  init() {}
+}
+
+/// Source information for Chronotopia API
+struct Chronotopia_ChronotopiaAPISource: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  var apiVersion: String = String()
+
+  var usedApiKey: String = String()
+
+  var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  init() {}
+}
+
+/// Source information for Google Maps Timeline export
+struct Chronotopia_GoogleMapsTimelineSource: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  var version: String = String()
+
+  var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  init() {}
+}
+
+/// Source information for Apple Health export
+struct Chronotopia_AppleHealthSource: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  var version: String = String()
+
+  var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  init() {}
+}
+
+/// Source information for external fitness apps
+struct Chronotopia_FitnessAppSource: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  var appName: String = String()
+
+  var appVersion: String = String()
+
+  var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  init() {}
+}
+
 struct Chronotopia_IngestBatch: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
@@ -44,7 +126,69 @@ struct Chronotopia_IngestBatch: Sendable {
   /// Batch of visit events
   var visits: [Chronotopia_VisitEvent] = []
 
+  /// Source information about where this data came from
+  var source: Chronotopia_IngestBatch.OneOf_Source? = nil
+
+  var chronotopiaApp: Chronotopia_ChronotopiaAppSource {
+    get {
+      if case .chronotopiaApp(let v)? = source {return v}
+      return Chronotopia_ChronotopiaAppSource()
+    }
+    set {source = .chronotopiaApp(newValue)}
+  }
+
+  var chronotopiaWeb: Chronotopia_ChronotopiaWebSource {
+    get {
+      if case .chronotopiaWeb(let v)? = source {return v}
+      return Chronotopia_ChronotopiaWebSource()
+    }
+    set {source = .chronotopiaWeb(newValue)}
+  }
+
+  var chronotopiaApi: Chronotopia_ChronotopiaAPISource {
+    get {
+      if case .chronotopiaApi(let v)? = source {return v}
+      return Chronotopia_ChronotopiaAPISource()
+    }
+    set {source = .chronotopiaApi(newValue)}
+  }
+
+  var googleMaps: Chronotopia_GoogleMapsTimelineSource {
+    get {
+      if case .googleMaps(let v)? = source {return v}
+      return Chronotopia_GoogleMapsTimelineSource()
+    }
+    set {source = .googleMaps(newValue)}
+  }
+
+  var appleHealth: Chronotopia_AppleHealthSource {
+    get {
+      if case .appleHealth(let v)? = source {return v}
+      return Chronotopia_AppleHealthSource()
+    }
+    set {source = .appleHealth(newValue)}
+  }
+
+  var fitnessApp: Chronotopia_FitnessAppSource {
+    get {
+      if case .fitnessApp(let v)? = source {return v}
+      return Chronotopia_FitnessAppSource()
+    }
+    set {source = .fitnessApp(newValue)}
+  }
+
   var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  /// Source information about where this data came from
+  enum OneOf_Source: Equatable, Sendable {
+    case chronotopiaApp(Chronotopia_ChronotopiaAppSource)
+    case chronotopiaWeb(Chronotopia_ChronotopiaWebSource)
+    case chronotopiaApi(Chronotopia_ChronotopiaAPISource)
+    case googleMaps(Chronotopia_GoogleMapsTimelineSource)
+    case appleHealth(Chronotopia_AppleHealthSource)
+    case fitnessApp(Chronotopia_FitnessAppSource)
+
+  }
 
   init() {}
 
@@ -312,6 +456,22 @@ struct Chronotopia_VisitEvent: @unchecked Sendable {
   /// Clears the value of `departure`. Subsequent reads from it will return its default value.
   mutating func clearDeparture() {_uniqueStorage()._departure = nil}
 
+  /// Semantic information
+  var canonicalLabel: String {
+    get {return _storage._canonicalLabel}
+    set {_uniqueStorage()._canonicalLabel = newValue}
+  }
+
+  /// External place identifier
+  var externalPlaceID: String {
+    get {return _storage._externalPlaceID ?? String()}
+    set {_uniqueStorage()._externalPlaceID = newValue}
+  }
+  /// Returns true if `externalPlaceID` has been explicitly set.
+  var hasExternalPlaceID: Bool {return _storage._externalPlaceID != nil}
+  /// Clears the value of `externalPlaceID`. Subsequent reads from it will return its default value.
+  mutating func clearExternalPlaceID() {_uniqueStorage()._externalPlaceID = nil}
+
   var unknownFields = SwiftProtobuf.UnknownStorage()
 
   init() {}
@@ -341,6 +501,34 @@ struct Chronotopia_DeviceMetadata: Sendable {
   init() {}
 }
 
+/// Google Maps Timeline Export data
+struct Chronotopia_GoogleMapsTimelineExport: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// Raw JSON content of the Google Maps Timeline export
+  var jsonContent: String = String()
+
+  /// Optional user-provided metadata
+  var exportName: String = String()
+
+  var exportDate: Chronotopia_DateTime {
+    get {return _exportDate ?? Chronotopia_DateTime()}
+    set {_exportDate = newValue}
+  }
+  /// Returns true if `exportDate` has been explicitly set.
+  var hasExportDate: Bool {return self._exportDate != nil}
+  /// Clears the value of `exportDate`. Subsequent reads from it will return its default value.
+  mutating func clearExportDate() {self._exportDate = nil}
+
+  var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  init() {}
+
+  fileprivate var _exportDate: Chronotopia_DateTime? = nil
+}
+
 /// Response to data uploads
 struct Chronotopia_IngestResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
@@ -357,14 +545,250 @@ struct Chronotopia_IngestResponse: Sendable {
   /// in seconds
   var recommendedUploadInterval: Int32 = 0
 
+  /// Processing statistics for timeline exports
+  var processedLocations: Int32 {
+    get {return _processedLocations ?? 0}
+    set {_processedLocations = newValue}
+  }
+  /// Returns true if `processedLocations` has been explicitly set.
+  var hasProcessedLocations: Bool {return self._processedLocations != nil}
+  /// Clears the value of `processedLocations`. Subsequent reads from it will return its default value.
+  mutating func clearProcessedLocations() {self._processedLocations = nil}
+
+  var processedActivities: Int32 {
+    get {return _processedActivities ?? 0}
+    set {_processedActivities = newValue}
+  }
+  /// Returns true if `processedActivities` has been explicitly set.
+  var hasProcessedActivities: Bool {return self._processedActivities != nil}
+  /// Clears the value of `processedActivities`. Subsequent reads from it will return its default value.
+  mutating func clearProcessedActivities() {self._processedActivities = nil}
+
+  var processedVisits: Int32 {
+    get {return _processedVisits ?? 0}
+    set {_processedVisits = newValue}
+  }
+  /// Returns true if `processedVisits` has been explicitly set.
+  var hasProcessedVisits: Bool {return self._processedVisits != nil}
+  /// Clears the value of `processedVisits`. Subsequent reads from it will return its default value.
+  mutating func clearProcessedVisits() {self._processedVisits = nil}
+
   var unknownFields = SwiftProtobuf.UnknownStorage()
 
   init() {}
+
+  fileprivate var _processedLocations: Int32? = nil
+  fileprivate var _processedActivities: Int32? = nil
+  fileprivate var _processedVisits: Int32? = nil
 }
 
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
 fileprivate let _protobuf_package = "chronotopia"
+
+extension Chronotopia_ChronotopiaAppSource: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  static let protoMessageName: String = _protobuf_package + ".ChronotopiaAppSource"
+  static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
+    1: .standard(proto: "app_version"),
+  ]
+
+  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.appVersion) }()
+      default: break
+      }
+    }
+  }
+
+  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.appVersion.isEmpty {
+      try visitor.visitSingularStringField(value: self.appVersion, fieldNumber: 1)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  static func ==(lhs: Chronotopia_ChronotopiaAppSource, rhs: Chronotopia_ChronotopiaAppSource) -> Bool {
+    if lhs.appVersion != rhs.appVersion {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Chronotopia_ChronotopiaWebSource: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  static let protoMessageName: String = _protobuf_package + ".ChronotopiaWebSource"
+  static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
+    1: .standard(proto: "web_version"),
+  ]
+
+  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.webVersion) }()
+      default: break
+      }
+    }
+  }
+
+  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.webVersion.isEmpty {
+      try visitor.visitSingularStringField(value: self.webVersion, fieldNumber: 1)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  static func ==(lhs: Chronotopia_ChronotopiaWebSource, rhs: Chronotopia_ChronotopiaWebSource) -> Bool {
+    if lhs.webVersion != rhs.webVersion {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Chronotopia_ChronotopiaAPISource: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  static let protoMessageName: String = _protobuf_package + ".ChronotopiaAPISource"
+  static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
+    1: .standard(proto: "api_version"),
+    2: .standard(proto: "used_api_key"),
+  ]
+
+  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.apiVersion) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.usedApiKey) }()
+      default: break
+      }
+    }
+  }
+
+  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.apiVersion.isEmpty {
+      try visitor.visitSingularStringField(value: self.apiVersion, fieldNumber: 1)
+    }
+    if !self.usedApiKey.isEmpty {
+      try visitor.visitSingularStringField(value: self.usedApiKey, fieldNumber: 2)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  static func ==(lhs: Chronotopia_ChronotopiaAPISource, rhs: Chronotopia_ChronotopiaAPISource) -> Bool {
+    if lhs.apiVersion != rhs.apiVersion {return false}
+    if lhs.usedApiKey != rhs.usedApiKey {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Chronotopia_GoogleMapsTimelineSource: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  static let protoMessageName: String = _protobuf_package + ".GoogleMapsTimelineSource"
+  static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
+    1: .same(proto: "version"),
+  ]
+
+  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.version) }()
+      default: break
+      }
+    }
+  }
+
+  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.version.isEmpty {
+      try visitor.visitSingularStringField(value: self.version, fieldNumber: 1)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  static func ==(lhs: Chronotopia_GoogleMapsTimelineSource, rhs: Chronotopia_GoogleMapsTimelineSource) -> Bool {
+    if lhs.version != rhs.version {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Chronotopia_AppleHealthSource: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  static let protoMessageName: String = _protobuf_package + ".AppleHealthSource"
+  static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
+    1: .same(proto: "version"),
+  ]
+
+  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.version) }()
+      default: break
+      }
+    }
+  }
+
+  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.version.isEmpty {
+      try visitor.visitSingularStringField(value: self.version, fieldNumber: 1)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  static func ==(lhs: Chronotopia_AppleHealthSource, rhs: Chronotopia_AppleHealthSource) -> Bool {
+    if lhs.version != rhs.version {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+extension Chronotopia_FitnessAppSource: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  static let protoMessageName: String = _protobuf_package + ".FitnessAppSource"
+  static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
+    1: .standard(proto: "app_name"),
+    2: .standard(proto: "app_version"),
+  ]
+
+  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.appName) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.appVersion) }()
+      default: break
+      }
+    }
+  }
+
+  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.appName.isEmpty {
+      try visitor.visitSingularStringField(value: self.appName, fieldNumber: 1)
+    }
+    if !self.appVersion.isEmpty {
+      try visitor.visitSingularStringField(value: self.appVersion, fieldNumber: 2)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  static func ==(lhs: Chronotopia_FitnessAppSource, rhs: Chronotopia_FitnessAppSource) -> Bool {
+    if lhs.appName != rhs.appName {return false}
+    if lhs.appVersion != rhs.appVersion {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
 
 extension Chronotopia_IngestBatch: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".IngestBatch"
@@ -373,6 +797,12 @@ extension Chronotopia_IngestBatch: SwiftProtobuf.Message, SwiftProtobuf._Message
     4: .same(proto: "locations"),
     5: .same(proto: "activities"),
     6: .same(proto: "visits"),
+    7: .standard(proto: "chronotopia_app"),
+    8: .standard(proto: "chronotopia_web"),
+    9: .standard(proto: "chronotopia_api"),
+    10: .standard(proto: "google_maps"),
+    11: .standard(proto: "apple_health"),
+    12: .standard(proto: "fitness_app"),
   ]
 
   mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
@@ -385,6 +815,84 @@ extension Chronotopia_IngestBatch: SwiftProtobuf.Message, SwiftProtobuf._Message
       case 4: try { try decoder.decodeRepeatedMessageField(value: &self.locations) }()
       case 5: try { try decoder.decodeRepeatedMessageField(value: &self.activities) }()
       case 6: try { try decoder.decodeRepeatedMessageField(value: &self.visits) }()
+      case 7: try {
+        var v: Chronotopia_ChronotopiaAppSource?
+        var hadOneofValue = false
+        if let current = self.source {
+          hadOneofValue = true
+          if case .chronotopiaApp(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.source = .chronotopiaApp(v)
+        }
+      }()
+      case 8: try {
+        var v: Chronotopia_ChronotopiaWebSource?
+        var hadOneofValue = false
+        if let current = self.source {
+          hadOneofValue = true
+          if case .chronotopiaWeb(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.source = .chronotopiaWeb(v)
+        }
+      }()
+      case 9: try {
+        var v: Chronotopia_ChronotopiaAPISource?
+        var hadOneofValue = false
+        if let current = self.source {
+          hadOneofValue = true
+          if case .chronotopiaApi(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.source = .chronotopiaApi(v)
+        }
+      }()
+      case 10: try {
+        var v: Chronotopia_GoogleMapsTimelineSource?
+        var hadOneofValue = false
+        if let current = self.source {
+          hadOneofValue = true
+          if case .googleMaps(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.source = .googleMaps(v)
+        }
+      }()
+      case 11: try {
+        var v: Chronotopia_AppleHealthSource?
+        var hadOneofValue = false
+        if let current = self.source {
+          hadOneofValue = true
+          if case .appleHealth(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.source = .appleHealth(v)
+        }
+      }()
+      case 12: try {
+        var v: Chronotopia_FitnessAppSource?
+        var hadOneofValue = false
+        if let current = self.source {
+          hadOneofValue = true
+          if case .fitnessApp(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.source = .fitnessApp(v)
+        }
+      }()
       default: break
       }
     }
@@ -407,6 +915,33 @@ extension Chronotopia_IngestBatch: SwiftProtobuf.Message, SwiftProtobuf._Message
     if !self.visits.isEmpty {
       try visitor.visitRepeatedMessageField(value: self.visits, fieldNumber: 6)
     }
+    switch self.source {
+    case .chronotopiaApp?: try {
+      guard case .chronotopiaApp(let v)? = self.source else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 7)
+    }()
+    case .chronotopiaWeb?: try {
+      guard case .chronotopiaWeb(let v)? = self.source else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 8)
+    }()
+    case .chronotopiaApi?: try {
+      guard case .chronotopiaApi(let v)? = self.source else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 9)
+    }()
+    case .googleMaps?: try {
+      guard case .googleMaps(let v)? = self.source else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 10)
+    }()
+    case .appleHealth?: try {
+      guard case .appleHealth(let v)? = self.source else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 11)
+    }()
+    case .fitnessApp?: try {
+      guard case .fitnessApp(let v)? = self.source else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 12)
+    }()
+    case nil: break
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -415,6 +950,7 @@ extension Chronotopia_IngestBatch: SwiftProtobuf.Message, SwiftProtobuf._Message
     if lhs.locations != rhs.locations {return false}
     if lhs.activities != rhs.activities {return false}
     if lhs.visits != rhs.visits {return false}
+    if lhs.source != rhs.source {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -737,6 +1273,8 @@ extension Chronotopia_VisitEvent: SwiftProtobuf.Message, SwiftProtobuf._MessageI
     3: .standard(proto: "horizontal_accuracy"),
     4: .same(proto: "arrival"),
     5: .same(proto: "departure"),
+    6: .standard(proto: "canonical_label"),
+    8: .standard(proto: "external_place_id"),
   ]
 
   fileprivate class _StorageClass {
@@ -745,6 +1283,8 @@ extension Chronotopia_VisitEvent: SwiftProtobuf.Message, SwiftProtobuf._MessageI
     var _horizontalAccuracy: Double = 0
     var _arrival: Chronotopia_DateTime? = nil
     var _departure: Chronotopia_DateTime? = nil
+    var _canonicalLabel: String = String()
+    var _externalPlaceID: String? = nil
 
     #if swift(>=5.10)
       // This property is used as the initial default value for new instances of the type.
@@ -764,6 +1304,8 @@ extension Chronotopia_VisitEvent: SwiftProtobuf.Message, SwiftProtobuf._MessageI
       _horizontalAccuracy = source._horizontalAccuracy
       _arrival = source._arrival
       _departure = source._departure
+      _canonicalLabel = source._canonicalLabel
+      _externalPlaceID = source._externalPlaceID
     }
   }
 
@@ -787,6 +1329,8 @@ extension Chronotopia_VisitEvent: SwiftProtobuf.Message, SwiftProtobuf._MessageI
         case 3: try { try decoder.decodeSingularDoubleField(value: &_storage._horizontalAccuracy) }()
         case 4: try { try decoder.decodeSingularMessageField(value: &_storage._arrival) }()
         case 5: try { try decoder.decodeSingularMessageField(value: &_storage._departure) }()
+        case 6: try { try decoder.decodeSingularStringField(value: &_storage._canonicalLabel) }()
+        case 8: try { try decoder.decodeSingularStringField(value: &_storage._externalPlaceID) }()
         default: break
         }
       }
@@ -814,6 +1358,12 @@ extension Chronotopia_VisitEvent: SwiftProtobuf.Message, SwiftProtobuf._MessageI
       try { if let v = _storage._departure {
         try visitor.visitSingularMessageField(value: v, fieldNumber: 5)
       } }()
+      if !_storage._canonicalLabel.isEmpty {
+        try visitor.visitSingularStringField(value: _storage._canonicalLabel, fieldNumber: 6)
+      }
+      try { if let v = _storage._externalPlaceID {
+        try visitor.visitSingularStringField(value: v, fieldNumber: 8)
+      } }()
     }
     try unknownFields.traverse(visitor: &visitor)
   }
@@ -828,6 +1378,8 @@ extension Chronotopia_VisitEvent: SwiftProtobuf.Message, SwiftProtobuf._MessageI
         if _storage._horizontalAccuracy != rhs_storage._horizontalAccuracy {return false}
         if _storage._arrival != rhs_storage._arrival {return false}
         if _storage._departure != rhs_storage._departure {return false}
+        if _storage._canonicalLabel != rhs_storage._canonicalLabel {return false}
+        if _storage._externalPlaceID != rhs_storage._externalPlaceID {return false}
         return true
       }
       if !storagesAreEqual {return false}
@@ -893,6 +1445,54 @@ extension Chronotopia_DeviceMetadata: SwiftProtobuf.Message, SwiftProtobuf._Mess
   }
 }
 
+extension Chronotopia_GoogleMapsTimelineExport: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  static let protoMessageName: String = _protobuf_package + ".GoogleMapsTimelineExport"
+  static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
+    1: .standard(proto: "json_content"),
+    2: .standard(proto: "export_name"),
+    3: .standard(proto: "export_date"),
+  ]
+
+  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.jsonContent) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.exportName) }()
+      case 3: try { try decoder.decodeSingularMessageField(value: &self._exportDate) }()
+      default: break
+      }
+    }
+  }
+
+  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    if !self.jsonContent.isEmpty {
+      try visitor.visitSingularStringField(value: self.jsonContent, fieldNumber: 1)
+    }
+    if !self.exportName.isEmpty {
+      try visitor.visitSingularStringField(value: self.exportName, fieldNumber: 2)
+    }
+    try { if let v = self._exportDate {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
+    } }()
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  static func ==(lhs: Chronotopia_GoogleMapsTimelineExport, rhs: Chronotopia_GoogleMapsTimelineExport) -> Bool {
+    if lhs.jsonContent != rhs.jsonContent {return false}
+    if lhs.exportName != rhs.exportName {return false}
+    if lhs._exportDate != rhs._exportDate {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
 extension Chronotopia_IngestResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".IngestResponse"
   static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
@@ -900,6 +1500,9 @@ extension Chronotopia_IngestResponse: SwiftProtobuf.Message, SwiftProtobuf._Mess
     2: .standard(proto: "alert_message"),
     3: .standard(proto: "pause_tracking"),
     4: .standard(proto: "recommended_upload_interval"),
+    5: .standard(proto: "processed_locations"),
+    6: .standard(proto: "processed_activities"),
+    7: .standard(proto: "processed_visits"),
   ]
 
   mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
@@ -912,12 +1515,19 @@ extension Chronotopia_IngestResponse: SwiftProtobuf.Message, SwiftProtobuf._Mess
       case 2: try { try decoder.decodeSingularStringField(value: &self.alertMessage) }()
       case 3: try { try decoder.decodeSingularBoolField(value: &self.pauseTracking) }()
       case 4: try { try decoder.decodeSingularInt32Field(value: &self.recommendedUploadInterval) }()
+      case 5: try { try decoder.decodeSingularInt32Field(value: &self._processedLocations) }()
+      case 6: try { try decoder.decodeSingularInt32Field(value: &self._processedActivities) }()
+      case 7: try { try decoder.decodeSingularInt32Field(value: &self._processedVisits) }()
       default: break
       }
     }
   }
 
   func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
     if self.success != false {
       try visitor.visitSingularBoolField(value: self.success, fieldNumber: 1)
     }
@@ -930,6 +1540,15 @@ extension Chronotopia_IngestResponse: SwiftProtobuf.Message, SwiftProtobuf._Mess
     if self.recommendedUploadInterval != 0 {
       try visitor.visitSingularInt32Field(value: self.recommendedUploadInterval, fieldNumber: 4)
     }
+    try { if let v = self._processedLocations {
+      try visitor.visitSingularInt32Field(value: v, fieldNumber: 5)
+    } }()
+    try { if let v = self._processedActivities {
+      try visitor.visitSingularInt32Field(value: v, fieldNumber: 6)
+    } }()
+    try { if let v = self._processedVisits {
+      try visitor.visitSingularInt32Field(value: v, fieldNumber: 7)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -938,6 +1557,9 @@ extension Chronotopia_IngestResponse: SwiftProtobuf.Message, SwiftProtobuf._Mess
     if lhs.alertMessage != rhs.alertMessage {return false}
     if lhs.pauseTracking != rhs.pauseTracking {return false}
     if lhs.recommendedUploadInterval != rhs.recommendedUploadInterval {return false}
+    if lhs._processedLocations != rhs._processedLocations {return false}
+    if lhs._processedActivities != rhs._processedActivities {return false}
+    if lhs._processedVisits != rhs._processedVisits {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

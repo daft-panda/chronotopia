@@ -524,6 +524,7 @@ pub struct RouteExpectation {
 }
 
 /// Route-based map matcher implementation
+#[derive(Debug)]
 pub struct RouteMatcher {
     config: RouteMatcherConfig,
     pub(crate) tile_loader: TileLoader,
@@ -2775,8 +2776,6 @@ impl RouteMatcher {
             to
         ))
     }
-
-    /// Build road network graph for path finding
 
     /// Calculate bounding box for the trace
     fn calculate_trace_bbox(&self, points: &[Point<f64>]) -> geo::Rect<f64> {

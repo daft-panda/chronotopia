@@ -119,11 +119,11 @@
 <script lang="ts" setup>
 import { MglMap, MglNavigationControl, MglGeolocateControl, MglGeoJsonSource, MglLineLayer, MglMarker } from '#components';
 import { ref, onMounted, computed } from 'vue';
-import { MapMatchingStatus, type TripSummary } from '~/model/chronotopia_pb';
 import { Timeline, type TimelineItem, type TimelineItemRange } from 'vue-timeline-chart'
 import 'vue-timeline-chart/style.css'
 import type { LngLatLike } from 'maplibre-gl';
-import type { DateTime } from '~/model/datetime_pb';
+import type { DateTime } from '~/model/common_pb';
+import { formatDateTime, formatDuration } from '~/utils/formatting';
 
 const { $api } = useNuxtApp();
 const router = useRouter();
@@ -180,29 +180,6 @@ const dateTimeToJsDate = (dateTime: DateTime) => {
 
     // JavaScript months are 0-based (0-11), while DateTime months are 1-based (1-12)
     return new Date(year, month - 1, day, hours, minutes, seconds, nanos / 1000000);
-};
-
-// Format DateTime to readable string
-const formatDateTime = (dateTime: DateTime) => {
-    if (!dateTime) return '';
-
-    const jsDate = dateTimeToJsDate(dateTime);
-    if (!jsDate) return '';
-
-    return jsDate.toLocaleString();
-};
-
-// Format duration from seconds to readable string
-const formatDuration = (seconds: number) => {
-    if (!seconds) return '';
-
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-
-    if (hours > 0) {
-        return `${hours}h ${minutes}m`;
-    }
-    return `${minutes}m`;
 };
 
 // Get status display text

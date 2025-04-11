@@ -8,6 +8,9 @@ mod osm_preprocessing;
 mod route_matcher;
 mod routing;
 mod tile_loader;
+mod trip_builder;
+mod trip_processor;
+mod trips;
 mod user_management;
 
 use crate::auth::auth_interceptor;
@@ -17,15 +20,12 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use geo::{Coord, Distance, Haversine, Point};
 use http::Method;
-use io::google_maps_local_timeline::LocationHistoryEntry;
-use log::{debug, info, warn};
+use log::info;
 use osm_preprocessing::WaySegment;
 use proto::chronotopia_server::{Chronotopia, ChronotopiaServer};
+use proto::trips_server::TripsServer;
 use proto::user_management_server::UserManagementServer;
-use proto::{
-    ConnectivityRequest, LatLon, MapMatchingStatus, ProcessedTrip, RequestParameters,
-    RouteMatchTrace, Trip, TripSummary, Trips, WindowDebugRequest,
-};
+use proto::{ConnectivityRequest, LatLon, Trip, WindowDebugRequest};
 use route_matcher::{
     MatchedWaySegment, PathfindingDebugInfo, PathfindingResult, RouteMatchJob, RouteMatcher,
     RouteMatcherConfig, TileConfig, WindowTrace,
@@ -34,20 +34,37 @@ use sea_orm::{Database, DatabaseConnection};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::Arc;
-use tokio::fs::File;
-use tokio::io::AsyncReadExt;
-use tokio::sync::{Mutex, RwLock};
+use std::sync::{Arc, LazyLock};
+use std::usize;
+use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 use tonic_web::GrpcWebLayer;
 use tower_http::cors::{Any, CorsLayer};
+use trip_builder::TripBuilder;
+use trip_processor::TripProcessor;
+use trips::TripsService;
 use user_management::UserManagementService;
+
+static ROUTE_MATCHER_CONFIG: LazyLock<RouteMatcherConfig> = LazyLock::new(|| RouteMatcherConfig {
+    osm_pbf_path: "../sudeste-latest.osm.pbf".to_string(),
+    tile_cache_dir: "sample/tiles".to_string(),
+    max_cached_tiles: 500,
+    max_matching_distance: 150.0,
+    tile_config: TileConfig {
+        base_tile_size: 1.0,
+        min_tile_density: 5000,
+        max_split_depth: 2,
+    },
+    max_candidates_per_point: 10,
+    max_tiles_per_depth: 100,
+    split_windows_on_failure: false,
+});
 
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::builder()
-        .filter_level(log::LevelFilter::Trace)
+        .filter_level(log::LevelFilter::Debug)
         .format_target(false)
         .format_timestamp(None)
         .target(env_logger::Target::Stderr)
@@ -57,64 +74,50 @@ async fn main() -> Result<()> {
     let db: DatabaseConnection =
         Database::connect("postgres://postgres:example@localhost/chronotopia").await?;
 
-    // Create configuration for route-based matcher
-    let route_matcher_config = RouteMatcherConfig {
-        osm_pbf_path: "../sudeste-latest.osm.pbf".to_string(),
-        tile_cache_dir: "sample/tiles".to_string(),
-        max_cached_tiles: 500,
-        max_matching_distance: 150.0,
-        tile_config: TileConfig {
-            base_tile_size: 1.0,
-            min_tile_density: 5000,
-            max_split_depth: 2,
-        },
-        max_candidates_per_point: 10,
-        max_tiles_per_depth: 100,
-        split_windows_on_failure: false,
-    };
-
     // Create route matcher
-    let route_matcher = RouteMatcher::new(route_matcher_config.clone())?;
+    let route_matcher = RouteMatcher::new(ROUTE_MATCHER_CONFIG.clone())?;
 
     // Check if preprocessing is needed
-    if !Path::new(&route_matcher_config.tile_cache_dir).exists() {
+    if !Path::new(&ROUTE_MATCHER_CONFIG.tile_cache_dir).exists() {
         info!("Tile cache directory doesn't exist. Starting preprocessing...");
         route_matcher.preprocess()?;
     } else {
         info!(
             "Using existing tile cache from {}",
-            route_matcher_config.tile_cache_dir
+            ROUTE_MATCHER_CONFIG.tile_cache_dir
         );
     }
 
-    let mut file = File::open("sample/location-history.json").await?;
+    // Create the trip builder service
+    let trip_builder = Arc::new(TripBuilder::new(db.clone(), route_matcher));
 
-    let mut contents = vec![];
-    file.read_to_end(&mut contents).await?;
+    // Create the trip processor service
+    let trip_processor = TripProcessor::new(db.clone(), trip_builder.clone());
 
-    let location_history: Vec<LocationHistoryEntry> = serde_json::from_slice(&contents)?;
-    info!("Loaded {} location history entries", location_history.len());
-
-    let addr = "[::]:10000".parse()?;
-    let chronotopia_service = ChronotopiaService::new(location_history, route_matcher).await?;
-
-    // Start trip processing in background
-    let service_clone = chronotopia_service.clone();
+    // Start trip processor scheduler in background
+    let processor_clone = trip_processor.clone();
     tokio::spawn(async move {
-        match service_clone.process_all_trips().await {
-            Ok(_) => info!("Successfully completed trip processing"),
-            Err(e) => warn!("Error during trip processing: {}", e),
-        }
+        processor_clone.start_scheduler().await;
     });
 
-    let svc = ChronotopiaServer::new(chronotopia_service);
+    // Create the trip API service
+    let trip_api_service = TripsService::new(db.clone(), trip_processor.into());
+    let trip_api_svc = TripsServer::with_interceptor(trip_api_service, auth_interceptor);
+
+    let addr = "[::]:10000".parse()?;
+    let chronotopia_service = ChronotopiaService::new().await?;
+    let chronotopia_svc = ChronotopiaServer::new(chronotopia_service);
 
     let user_management_service = UserManagementService::new(db.clone());
     let user_management_svc = UserManagementServer::new(user_management_service);
 
     // Create the authenticated ingest service with middleware
     let ingest_service = IngestService::new(db.clone());
-    let ingest_svc = IngestServer::with_interceptor(ingest_service, auth_interceptor);
+    // let ingest_svc = IngestServer::with_interceptor(ingest_service, auth_interceptor);
+    let ingest_svc = InterceptedService::new(
+        IngestServer::new(ingest_service).max_decoding_message_size(usize::MAX),
+        auth_interceptor,
+    );
 
     let cors = CorsLayer::new()
         .allow_methods([Method::GET, Method::POST])
@@ -126,9 +129,10 @@ async fn main() -> Result<()> {
         .accept_http1(true)
         .layer(cors)
         .layer(GrpcWebLayer::new())
-        .add_service(svc)
+        .add_service(chronotopia_svc)
         .add_service(user_management_svc)
         .add_service(ingest_svc)
+        .add_service(trip_api_svc)
         .serve(addr)
         .await
         .unwrap();
@@ -137,238 +141,11 @@ async fn main() -> Result<()> {
 }
 
 #[derive(Clone)]
-struct ChronotopiaService {
-    location_history: Arc<Vec<LocationHistoryEntry>>,
-    route_matcher: Arc<Mutex<RouteMatcher>>,
-    processed_trips: Arc<RwLock<HashMap<usize, ProcessedTrip>>>,
-    trip_summaries: Arc<RwLock<HashMap<usize, TripSummary>>>,
-}
+struct ChronotopiaService {}
 
 impl ChronotopiaService {
-    async fn new(
-        location_history: Vec<LocationHistoryEntry>,
-        route_matcher: RouteMatcher,
-    ) -> Result<Self> {
-        Ok(Self {
-            location_history: Arc::new(location_history),
-            route_matcher: Arc::new(Mutex::new(route_matcher)),
-            processed_trips: Arc::new(RwLock::new(HashMap::new())),
-            trip_summaries: Arc::new(RwLock::new(HashMap::new())),
-        })
-    }
-
-    async fn process_all_trips(&self) -> Result<()> {
-        info!(
-            "Processing all trips from {} location history entries using Route-Based Matcher",
-            self.location_history.len()
-        );
-
-        let trips = self.extract_trips().await?;
-        info!("Extracted {} trips for processing", trips.len());
-
-        // Initialize all trips as pending
-        {
-            let mut status = self.trip_summaries.write().await;
-            for (idx, trip) in trips.iter().enumerate() {
-                // Calculate some basic stats
-                let duration_seconds =
-                    if let (Some(start_time), Some(stop_time)) = (&trip.start, &trip.stop) {
-                        Some((stop_time.seconds - start_time.seconds) as i64)
-                    } else {
-                        None
-                    };
-
-                let point_count = trip.points.len() as u32;
-                status.insert(
-                    idx,
-                    TripSummary {
-                        index: idx as u32,
-                        start: trip.start.clone(),
-                        end: trip.stop.clone(),
-                        point_count,
-                        status: MapMatchingStatus::Pending.into(),
-                        duration_seconds,
-                        distance_meters: 0.0, // This would require calculating from the matched segments
-                        start_point: trip.points.first().and_then(|p| p.latlon),
-                        end_point: trip.points.last().and_then(|p| p.latlon),
-                        matched_segment_count: 0,
-                    },
-                );
-            }
-        }
-
-        info!("Processing {} trips", trips.len());
-
-        // Process each trip
-        for (idx, trip) in trips.into_iter().enumerate() {
-            // Update status to processing
-            {
-                let mut status = self.trip_summaries.write().await;
-                status
-                    .get_mut(&idx)
-                    .unwrap()
-                    .set_status(MapMatchingStatus::Processing);
-            }
-
-            match self.process_trip(trip.clone(), idx).await {
-                Ok(processed_trip) => {
-                    let mut status = self.trip_summaries.write().await;
-                    let summary = status.get_mut(&idx).unwrap();
-                    summary.set_status(MapMatchingStatus::Completed);
-                    summary.matched_segment_count = processed_trip.matched_segments.len() as u32;
-                    info!("Successfully processed trip {}", idx);
-                }
-                Err(e) => {
-                    let mut status = self.trip_summaries.write().await;
-                    status
-                        .get_mut(&idx)
-                        .unwrap()
-                        .set_status(MapMatchingStatus::Failed);
-                    warn!("Failed to process trip {}: {}", idx, e);
-                }
-            }
-        }
-
-        info!("All trips processed");
-        Ok(())
-    }
-
-    async fn extract_trips(&self) -> Result<Vec<Trip>> {
-        let mut trips = Vec::new();
-        let mut pending_trip: Option<Trip> = None;
-
-        for entry in self.location_history.iter() {
-            if let LocationHistoryEntry::Timeline(tl) = entry {
-                let trip: Trip = tl.into();
-                if tl.timeline_path.len() < 2 {
-                    continue;
-                }
-
-                // Include all trips with reasonable data
-                if trip.points.len() >= 2 {
-                    if let Some(ptrip) = pending_trip.as_mut() {
-                        // Check if the trips should be merged (close in time)
-                        if trip
-                            .points
-                            .first()
-                            .as_ref()
-                            .unwrap()
-                            .date_time
-                            .as_ref()
-                            .unwrap()
-                            .timestamp()
-                            - ptrip
-                                .points
-                                .last()
-                                .as_ref()
-                                .unwrap()
-                                .date_time
-                                .as_ref()
-                                .unwrap()
-                                .timestamp()
-                            < chrono::Duration::hours(1).num_seconds()
-                        {
-                            debug!("Merging timeline entries");
-                            ptrip.points.extend(trip.points.clone());
-                            ptrip.stop = trip.stop;
-                            continue;
-                        } else {
-                            trips.push(pending_trip.take().unwrap());
-                        }
-                    }
-
-                    pending_trip = Some(trip);
-                }
-            }
-        }
-
-        // Add the last pending trip if any
-        if let Some(trip) = pending_trip {
-            trips.push(trip);
-        }
-
-        Ok(trips)
-    }
-
-    async fn process_trip(&self, trip: Trip, trip_idx: usize) -> Result<ProcessedTrip> {
-        // Extract points and timestamps
-        let mut gps_points = Vec::new();
-        let mut timestamps = Vec::new();
-
-        for p in &trip.points {
-            if let Some(ts) = &p.date_time {
-                let dt: DateTime<Utc> = ts.into();
-                gps_points.push(Point::new(
-                    p.latlon.as_ref().unwrap().lon,
-                    p.latlon.as_ref().unwrap().lat,
-                ));
-                timestamps.push(dt);
-            }
-        }
-
-        let mut job = RouteMatchJob::new(gps_points, timestamps, None);
-        job.activate_tracing();
-
-        // Perform map matching
-        info!(
-            "Map matching trip {} with {} points",
-            trip_idx,
-            job.gps_points.len()
-        );
-        let mut route_matcher = self.route_matcher.lock().await;
-
-        match route_matcher.match_trace(&mut job) {
-            Ok(result) => {
-                info!(
-                    "Map matching successful for trip {}: {} segments matched",
-                    trip_idx,
-                    result.len()
-                );
-
-                // Generate GeoJSON for the matched route
-                let matched_geojson = road_segments_to_geojson(&result);
-
-                // Create route match trace from job
-                let route_match_trace = {
-                    let window_trace = job.window_trace.borrow();
-                    let point_candidates = job.point_candidates_geojson.borrow();
-                    RouteMatchTrace {
-                        trip: Some(trip.clone()),
-                        window_traces: window_trace.iter().map(|v| v.into()).collect(),
-                        point_candidates: point_candidates
-                            .iter()
-                            .map(|v| serde_json::to_string(v).unwrap())
-                            .collect(),
-                    }
-                };
-
-                // Store the processed trip
-                let processed_trip = ProcessedTrip {
-                    trip: Some(trip),
-                    matched_segments: result.iter().map(|s| s.into()).collect(),
-                    route_match_trace: Some(route_match_trace),
-                    geojson: serde_json::to_string(&matched_geojson)?,
-                };
-
-                let mut trips = self.processed_trips.write().await;
-                trips.insert(trip_idx, processed_trip.clone());
-
-                Ok(processed_trip)
-            }
-            Err(e) => {
-                warn!(
-                    "Route-based map matching failed for trip {}: {}",
-                    trip_idx, e
-                );
-                Err(e)
-            }
-        }
-    }
-
-    async fn get_trip_summary(&self, trip_idx: usize) -> Option<TripSummary> {
-        let trips = self.trip_summaries.read().await;
-
-        trips.get(&trip_idx).cloned()
+    async fn new() -> Result<Self> {
+        Ok(Self {})
     }
 
     async fn load_tiles_for_segments(
@@ -482,106 +259,6 @@ impl ChronotopiaService {
 
 #[tonic::async_trait]
 impl Chronotopia for ChronotopiaService {
-    async fn get_trips(
-        &self,
-        request: Request<RequestParameters>,
-    ) -> Result<Response<Trips>, Status> {
-        let req = request.into_inner();
-        let mut trips = Vec::new();
-
-        let all_trips = self
-            .extract_trips()
-            .await
-            .map_err(|e| Status::internal(format!("Failed to extract trips: {}", e)))?;
-
-        for trip in all_trips {
-            if let Some(from) = req.from.as_ref() {
-                if let Some(start) = trip.start.as_ref() {
-                    if start.seconds < from.seconds {
-                        continue;
-                    }
-                }
-            }
-
-            trips.push(trip);
-        }
-
-        Ok(Response::new(Trips { trips }))
-    }
-
-    async fn get_route_match_trace(
-        &self,
-        request: Request<proto::GetRouteMatchTraceRequest>,
-    ) -> Result<Response<RouteMatchTrace>, Status> {
-        let req = request.into_inner();
-        let trip_idx = req.trip_index as usize;
-
-        let trips = self.processed_trips.read().await;
-        if let Some(processed_trip) = trips.get(&trip_idx) {
-            if let Some(trace) = &processed_trip.route_match_trace {
-                return Ok(Response::new(trace.clone()));
-            }
-        }
-
-        Err(Status::not_found(format!(
-            "Route match trace for trip {} not found",
-            trip_idx
-        )))
-    }
-
-    async fn get_trip_summaries(
-        &self,
-        _request: Request<()>,
-    ) -> Result<Response<proto::TripSummaries>, Status> {
-        let status = self.trip_summaries.read().await;
-        let mut summaries = Vec::new();
-
-        for idx in status.keys() {
-            if let Some(summary) = self.get_trip_summary(*idx).await {
-                summaries.push(summary);
-            }
-        }
-
-        // Sort by start time
-        summaries.sort_by_key(|s| s.start.as_ref().map(|t| t.seconds).unwrap_or(0));
-
-        Ok(Response::new(proto::TripSummaries { summaries }))
-    }
-
-    async fn get_trip_geo_json(
-        &self,
-        request: Request<proto::TripRequest>,
-    ) -> Result<Response<prost::alloc::string::String>, Status> {
-        let trip_idx = request.into_inner().trip_index as usize;
-
-        let trips = self.processed_trips.read().await;
-        if let Some(processed_trip) = trips.get(&trip_idx) {
-            return Ok(Response::new(processed_trip.geojson.clone()));
-        }
-
-        Err(Status::not_found(format!(
-            "GeoJSON for trip {} not found",
-            trip_idx
-        )))
-    }
-
-    async fn get_processed_trip(
-        &self,
-        request: Request<proto::TripRequest>,
-    ) -> Result<Response<ProcessedTrip>, Status> {
-        let trip_idx = request.into_inner().trip_index as usize;
-
-        let trips = self.processed_trips.read().await;
-        if let Some(processed_trip) = trips.get(&trip_idx) {
-            return Ok(Response::new(processed_trip.clone()));
-        }
-
-        Err(Status::not_found(format!(
-            "Processed trip {} not found",
-            trip_idx
-        )))
-    }
-
     async fn debug_window_path_finding(
         &self,
         request: Request<WindowDebugRequest>,
@@ -590,10 +267,7 @@ impl Chronotopia for ChronotopiaService {
         let trip_idx = req.trip_index as usize;
 
         // Get the processed trip data
-        let processed_trips = self.processed_trips.read().await;
-        let processed_trip = processed_trips.get(&trip_idx).ok_or_else(|| {
-            Status::not_found(format!("Trip {} not found or not processed yet", trip_idx))
-        })?;
+        let processed_trip = Trip::default();
 
         if let (Some(from_segment_id), Some(to_segment_id)) =
             (req.from_segment_id, req.to_segment_id)
@@ -603,7 +277,8 @@ impl Chronotopia for ChronotopiaService {
                 from_segment_id, to_segment_id
             );
 
-            let mut route_matcher = self.route_matcher.lock().await;
+            let mut route_matcher = RouteMatcher::new(ROUTE_MATCHER_CONFIG.clone())
+                .map_err(|e| Status::internal("failed to blabla"))?;
 
             // Create a temporary job for debugging
             let mut job = RouteMatchJob::new(
@@ -646,7 +321,8 @@ impl Chronotopia for ChronotopiaService {
         );
 
         // Get relevant constraints for this window
-        let mut route_matcher = self.route_matcher.lock().await;
+        let mut route_matcher = RouteMatcher::new(ROUTE_MATCHER_CONFIG.clone())
+            .map_err(|e| Status::internal("failed to blabla"))?;
 
         // Get route match trace for this trip
         let trace = match &processed_trip.route_match_trace {
@@ -674,10 +350,7 @@ impl Chronotopia for ChronotopiaService {
             .collect();
 
         // Create a temporary job for debugging
-        let points: Vec<Point<f64>> = trace
-            .trip
-            .as_ref()
-            .ok_or_else(|| Status::internal("Trip data not found in route match trace"))?
+        let points: Vec<Point<f64>> = processed_trip
             .points
             .iter()
             .filter_map(|p| {
@@ -687,10 +360,7 @@ impl Chronotopia for ChronotopiaService {
             })
             .collect();
 
-        let timestamps: Vec<DateTime<Utc>> = trace
-            .trip
-            .as_ref()
-            .unwrap()
+        let timestamps: Vec<DateTime<Utc>> = processed_trip
             .points
             .iter()
             .map(|p| p.date_time.as_ref().unwrap().into())
@@ -735,11 +405,13 @@ impl Chronotopia for ChronotopiaService {
         let trip_idx = req.trip_index as usize;
 
         // Get the processed trip data
-        let processed_trips = self.processed_trips.read().await;
-        let processed_trip = processed_trips.get(&trip_idx).ok_or_else(|| {
-            Status::not_found(format!("Trip {} not found or not processed yet", trip_idx))
-        })?;
+        // let processed_trips = self.processed_trips.read().await;
+        // let processed_trip = processed_trips.get(&trip_idx).ok_or_else(|| {
+        //     Status::not_found(format!("Trip {} not found or not processed yet", trip_idx))
+        // })?;
+        unimplemented!();
 
+        let processed_trip = Trip::default();
         // Get route match trace for this trip
         let trace = match &processed_trip.route_match_trace {
             Some(trace) => trace,
@@ -762,13 +434,11 @@ impl Chronotopia for ChronotopiaService {
             );
 
             // Create a temporary job for connectivity analysis
-            let mut route_matcher = self.route_matcher.lock().await;
+            let mut route_matcher = RouteMatcher::new(ROUTE_MATCHER_CONFIG.clone())
+                .map_err(|e| Status::internal("failed to blabla"))?;
 
             // Create a job using the trip data
-            let points: Vec<Point<f64>> = trace
-                .trip
-                .as_ref()
-                .ok_or_else(|| Status::internal("Trip data not found in route match trace"))?
+            let points: Vec<Point<f64>> = processed_trip
                 .points
                 .iter()
                 .filter_map(|p| {
@@ -778,10 +448,7 @@ impl Chronotopia for ChronotopiaService {
                 })
                 .collect();
 
-            let timestamps: Vec<DateTime<Utc>> = trace
-                .trip
-                .as_ref()
-                .unwrap()
+            let timestamps: Vec<DateTime<Utc>> = processed_trip
                 .points
                 .iter()
                 .map(|p| p.date_time.as_ref().unwrap().into())
@@ -823,7 +490,8 @@ impl Chronotopia for ChronotopiaService {
                 trip_idx, from_segment_id, to_segment_id
             );
 
-            let mut route_matcher = self.route_matcher.lock().await;
+            let mut route_matcher = RouteMatcher::new(ROUTE_MATCHER_CONFIG.clone())
+                .map_err(|e| Status::internal("failed to blabla"))?;
 
             // Create a temporary job for debugging
             let mut job = RouteMatchJob::new(
@@ -888,7 +556,8 @@ impl Chronotopia for ChronotopiaService {
         let radius_meters = 2000.0;
         let mut segments_in_radius = HashSet::new();
         let mut connections_count = HashMap::new();
-        let mut route_matcher = self.route_matcher.lock().await;
+        let mut route_matcher = RouteMatcher::new(ROUTE_MATCHER_CONFIG.clone())
+            .map_err(|e| Status::internal("failed to blabla"))?;
         let loaded_tiles: Vec<String> = route_matcher
             .tile_loader
             .loaded_tiles
@@ -1334,6 +1003,20 @@ impl From<PathfindingDebugInfo> for proto::PathfindingDebugInfo {
 impl From<LatLon> for geo::Point<f64> {
     fn from(value: LatLon) -> Self {
         Point::new(value.lon, value.lat)
+    }
+}
+
+impl From<&crate::entity::user_locations_ingest::Model> for crate::proto::Point {
+    fn from(value: &crate::entity::user_locations_ingest::Model) -> Self {
+        Self {
+            latlon: Some(LatLon {
+                lat: value.latitude,
+                lon: value.longitude,
+            }),
+            date_time: Some((&value.date_time).into()),
+            elevation: value.altitude.map(|v| v as f32),
+            ..Default::default()
+        }
     }
 }
 

@@ -43,10 +43,23 @@ internal enum Chronotopia_Ingest {
                 method: "SubmitDeviceMetadata"
             )
         }
+        /// Namespace for "SubmitGoogleMapsTimelineExport" metadata.
+        internal enum SubmitGoogleMapsTimelineExport {
+            /// Request type for "SubmitGoogleMapsTimelineExport".
+            internal typealias Input = Chronotopia_GoogleMapsTimelineExport
+            /// Response type for "SubmitGoogleMapsTimelineExport".
+            internal typealias Output = Chronotopia_IngestResponse
+            /// Descriptor for "SubmitGoogleMapsTimelineExport".
+            internal static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "chronotopia.Ingest"),
+                method: "SubmitGoogleMapsTimelineExport"
+            )
+        }
         /// Descriptors for all methods in the "chronotopia.Ingest" service.
         internal static let descriptors: [GRPCCore.MethodDescriptor] = [
             SubmitBatch.descriptor,
-            SubmitDeviceMetadata.descriptor
+            SubmitDeviceMetadata.descriptor,
+            SubmitGoogleMapsTimelineExport.descriptor
         ]
     }
 }
@@ -97,6 +110,20 @@ extension Chronotopia_Ingest {
             request: GRPCCore.StreamingServerRequest<Chronotopia_DeviceMetadata>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.StreamingServerResponse<Chronotopia_IngestResponse>
+
+        /// Handle the "SubmitGoogleMapsTimelineExport" method.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Chronotopia_GoogleMapsTimelineExport` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Chronotopia_IngestResponse` messages.
+        func submitGoogleMapsTimelineExport(
+            request: GRPCCore.StreamingServerRequest<Chronotopia_GoogleMapsTimelineExport>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Chronotopia_IngestResponse>
     }
 
     /// Service protocol for the "chronotopia.Ingest" service.
@@ -134,6 +161,20 @@ extension Chronotopia_Ingest {
             request: GRPCCore.ServerRequest<Chronotopia_DeviceMetadata>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.ServerResponse<Chronotopia_IngestResponse>
+
+        /// Handle the "SubmitGoogleMapsTimelineExport" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Chronotopia_GoogleMapsTimelineExport` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A response containing a single `Chronotopia_IngestResponse` message.
+        func submitGoogleMapsTimelineExport(
+            request: GRPCCore.ServerRequest<Chronotopia_GoogleMapsTimelineExport>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.ServerResponse<Chronotopia_IngestResponse>
     }
 
     /// Simple service protocol for the "chronotopia.Ingest" service.
@@ -169,6 +210,20 @@ extension Chronotopia_Ingest {
             request: Chronotopia_DeviceMetadata,
             context: GRPCCore.ServerContext
         ) async throws -> Chronotopia_IngestResponse
+
+        /// Handle the "SubmitGoogleMapsTimelineExport" method.
+        ///
+        /// - Parameters:
+        ///   - request: A `Chronotopia_GoogleMapsTimelineExport` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A `Chronotopia_IngestResponse` to respond with.
+        func submitGoogleMapsTimelineExport(
+            request: Chronotopia_GoogleMapsTimelineExport,
+            context: GRPCCore.ServerContext
+        ) async throws -> Chronotopia_IngestResponse
     }
 }
 
@@ -192,6 +247,17 @@ extension Chronotopia_Ingest.StreamingServiceProtocol {
             serializer: GRPCProtobuf.ProtobufSerializer<Chronotopia_IngestResponse>(),
             handler: { request, context in
                 try await self.submitDeviceMetadata(
+                    request: request,
+                    context: context
+                )
+            }
+        )
+        router.registerHandler(
+            forMethod: Chronotopia_Ingest.Method.SubmitGoogleMapsTimelineExport.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Chronotopia_GoogleMapsTimelineExport>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Chronotopia_IngestResponse>(),
+            handler: { request, context in
+                try await self.submitGoogleMapsTimelineExport(
                     request: request,
                     context: context
                 )
@@ -223,6 +289,17 @@ extension Chronotopia_Ingest.ServiceProtocol {
         )
         return GRPCCore.StreamingServerResponse(single: response)
     }
+
+    internal func submitGoogleMapsTimelineExport(
+        request: GRPCCore.StreamingServerRequest<Chronotopia_GoogleMapsTimelineExport>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Chronotopia_IngestResponse> {
+        let response = try await self.submitGoogleMapsTimelineExport(
+            request: GRPCCore.ServerRequest(stream: request),
+            context: context
+        )
+        return GRPCCore.StreamingServerResponse(single: response)
+    }
 }
 
 // Default implementation of methods from 'ServiceProtocol'.
@@ -246,6 +323,19 @@ extension Chronotopia_Ingest.SimpleServiceProtocol {
     ) async throws -> GRPCCore.ServerResponse<Chronotopia_IngestResponse> {
         return GRPCCore.ServerResponse<Chronotopia_IngestResponse>(
             message: try await self.submitDeviceMetadata(
+                request: request.message,
+                context: context
+            ),
+            metadata: [:]
+        )
+    }
+
+    internal func submitGoogleMapsTimelineExport(
+        request: GRPCCore.ServerRequest<Chronotopia_GoogleMapsTimelineExport>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.ServerResponse<Chronotopia_IngestResponse> {
+        return GRPCCore.ServerResponse<Chronotopia_IngestResponse>(
+            message: try await self.submitGoogleMapsTimelineExport(
                 request: request.message,
                 context: context
             ),
@@ -295,6 +385,25 @@ extension Chronotopia_Ingest {
         func submitDeviceMetadata<Result>(
             request: GRPCCore.ClientRequest<Chronotopia_DeviceMetadata>,
             serializer: some GRPCCore.MessageSerializer<Chronotopia_DeviceMetadata>,
+            deserializer: some GRPCCore.MessageDeserializer<Chronotopia_IngestResponse>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Chronotopia_IngestResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "SubmitGoogleMapsTimelineExport" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Chronotopia_GoogleMapsTimelineExport` message.
+        ///   - serializer: A serializer for `Chronotopia_GoogleMapsTimelineExport` messages.
+        ///   - deserializer: A deserializer for `Chronotopia_IngestResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func submitGoogleMapsTimelineExport<Result>(
+            request: GRPCCore.ClientRequest<Chronotopia_GoogleMapsTimelineExport>,
+            serializer: some GRPCCore.MessageSerializer<Chronotopia_GoogleMapsTimelineExport>,
             deserializer: some GRPCCore.MessageDeserializer<Chronotopia_IngestResponse>,
             options: GRPCCore.CallOptions,
             onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Chronotopia_IngestResponse>) async throws -> Result
@@ -376,6 +485,36 @@ extension Chronotopia_Ingest {
                 onResponse: handleResponse
             )
         }
+
+        /// Call the "SubmitGoogleMapsTimelineExport" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Chronotopia_GoogleMapsTimelineExport` message.
+        ///   - serializer: A serializer for `Chronotopia_GoogleMapsTimelineExport` messages.
+        ///   - deserializer: A deserializer for `Chronotopia_IngestResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        internal func submitGoogleMapsTimelineExport<Result>(
+            request: GRPCCore.ClientRequest<Chronotopia_GoogleMapsTimelineExport>,
+            serializer: some GRPCCore.MessageSerializer<Chronotopia_GoogleMapsTimelineExport>,
+            deserializer: some GRPCCore.MessageDeserializer<Chronotopia_IngestResponse>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Chronotopia_IngestResponse>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.unary(
+                request: request,
+                descriptor: Chronotopia_Ingest.Method.SubmitGoogleMapsTimelineExport.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
     }
 }
 
@@ -425,6 +564,31 @@ extension Chronotopia_Ingest.ClientProtocol {
         try await self.submitDeviceMetadata(
             request: request,
             serializer: GRPCProtobuf.ProtobufSerializer<Chronotopia_DeviceMetadata>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Chronotopia_IngestResponse>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "SubmitGoogleMapsTimelineExport" method.
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Chronotopia_GoogleMapsTimelineExport` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    internal func submitGoogleMapsTimelineExport<Result>(
+        request: GRPCCore.ClientRequest<Chronotopia_GoogleMapsTimelineExport>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Chronotopia_IngestResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.submitGoogleMapsTimelineExport(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Chronotopia_GoogleMapsTimelineExport>(),
             deserializer: GRPCProtobuf.ProtobufDeserializer<Chronotopia_IngestResponse>(),
             options: options,
             onResponse: handleResponse
@@ -486,6 +650,35 @@ extension Chronotopia_Ingest.ClientProtocol {
             metadata: metadata
         )
         return try await self.submitDeviceMetadata(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "SubmitGoogleMapsTimelineExport" method.
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    internal func submitGoogleMapsTimelineExport<Result>(
+        _ message: Chronotopia_GoogleMapsTimelineExport,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Chronotopia_IngestResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Chronotopia_GoogleMapsTimelineExport>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.submitGoogleMapsTimelineExport(
             request: request,
             options: options,
             onResponse: handleResponse

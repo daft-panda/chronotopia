@@ -1,90 +1,13 @@
 syntax = "proto3";
-import "google/protobuf/empty.proto";
-import "google/protobuf/timestamp.proto";
 import "google/protobuf/wrappers.proto";
-import "datetime.proto";
+import "common.proto";
 
 package chronotopia;
 
 service Chronotopia {
-    rpc GetTrips(RequestParameters) returns (Trips);
-    rpc GetRouteMatchTrace(GetRouteMatchTraceRequest) returns (RouteMatchTrace);
-    rpc GetTripSummaries(google.protobuf.Empty) returns (TripSummaries);
-    rpc GetTripGeoJSON(TripRequest) returns (google.protobuf.StringValue);
-    rpc GetProcessedTrip(TripRequest) returns (ProcessedTrip);
     rpc OSMNetworkAroundPoint(LatLon) returns (google.protobuf.StringValue);
     rpc AnalyzeSegmentConnectivity(ConnectivityRequest) returns (google.protobuf.StringValue);
     rpc DebugWindowPathFinding(WindowDebugRequest) returns (PathfindingDebugInfo);
-}
-
-message RequestParameters {
-    optional DateTime from = 1;
-    optional DateTime to = 2;
-    optional uint32 h3 = 3;
-}
-
-message LatLon {
-    double lat = 1;
-    double lon = 2;
-}
-
-message Point {
-    LatLon latlon = 1;
-    DateTime dateTime = 3;
-    optional string label = 4;
-    optional string note = 5;
-    optional float elevation = 6;
-}
-
-message Trip {
-    repeated Point points = 1;
-    DateTime start = 2;
-    DateTime stop = 3;
-    optional string label = 10;
-}
-
-message Trips {
-    repeated Trip trips = 1;
-}
-
-enum MapMatchingStatus {
-    UNKNOWN = 0;
-    PENDING = 1;
-    PROCESSING = 2;
-    COMPLETED = 3;
-    FAILED = 4;
-}
-
-message TripSummary {
-    uint32 index = 1;
-    DateTime start = 2;
-    DateTime end = 3;
-    uint32 point_count = 4;
-    MapMatchingStatus status = 5;
-    optional int64 duration_seconds = 6;
-    double distance_meters = 7;
-    LatLon start_point = 8;
-    LatLon end_point = 9;
-    uint32 matched_segment_count = 10;
-}
-
-message TripSummaries {
-    repeated TripSummary summaries = 1;
-}
-
-message GetRouteMatchTraceRequest {
-    uint32 trip_index = 1;
-}
-
-message TripRequest {
-    uint32 trip_index = 1;
-}
-
-message ProcessedTrip {
-    Trip trip = 1;
-    repeated RoadSegment matched_segments = 2;
-    RouteMatchTrace route_match_trace = 3;
-    string geojson = 4;
 }
 
 message RoadSegment {
@@ -98,32 +21,6 @@ message RoadSegment {
     optional uint32 interim_start_idx = 8;
     optional uint32 interim_end_idx = 9;
     repeated LatLon full_coordinates = 10;
-}
-
-message PointConstraint {
-    uint32 point_idx = 1;
-    uint64 segment_id = 2;
-    uint64 way_id = 3;
-    double distance = 4;
-}
-
-message WindowTrace {
-    uint32 start = 1;
-    uint32 end = 2;
-    repeated RoadSegment segments = 3;
-    bool bridge = 4;
-    repeated PointConstraint constraints = 5;
-    bool used_constraints = 6;
-    optional double constraint_score = 7;
-    optional double unconstrained_score = 8;
-    repeated uint64 attempted_way_ids = 9;
-    repeated string debug_notes = 10;
-}
-
-message RouteMatchTrace {
-    Trip trip = 1;
-    repeated WindowTrace windowTraces = 2;
-    repeated google.protobuf.StringValue pointCandidates = 3;
 }
 
 message WindowDebugRequest {

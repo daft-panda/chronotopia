@@ -2,7 +2,7 @@
 
 use sea_orm::entity::prelude::*;
 
-#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
+#[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "trips")]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
@@ -10,10 +10,23 @@ pub struct Model {
     pub user_id: Uuid,
     #[sea_orm(column_type = "custom(\"geometry\")")]
     pub geometry: String,
-    pub date: DateTime,
+    #[sea_orm(column_type = "custom(\"geometry\")")]
+    pub bounding_box: String,
+    pub start_time: DateTimeWithTimeZone,
+    pub end_time: DateTimeWithTimeZone,
+    #[sea_orm(column_type = "Double")]
+    pub distance_meters: f64,
+    #[sea_orm(column_type = "VarBinary(StringLen::None)", nullable)]
+    pub points: Option<Vec<u8>>,
+    pub processed: bool,
+    #[sea_orm(column_type = "JsonBinary")]
+    pub osm_way_ids: Json,
+    #[sea_orm(column_type = "VarBinary(StringLen::None)", nullable)]
+    pub route_match_trace: Option<Vec<u8>>,
     pub label: Option<String>,
     pub notes: Option<String>,
-    pub last_modified: DateTime,
+    pub geo_json: Option<String>,
+    pub last_modified: DateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

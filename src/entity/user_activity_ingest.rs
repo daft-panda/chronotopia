@@ -8,7 +8,7 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i32,
-    pub batch_id: Uuid,
+    pub batch_id: i32,
     pub r#type: ActivityType,
     pub confidence: i32,
     pub start_date_time: DateTimeWithTimeZone,

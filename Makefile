@@ -4,7 +4,7 @@ proto:
 	cd proto/ && npx --prefix ../web buf generate
 
 proto-swift:
-	cd proto && protoc --swift_out=. ingest.proto && protoc --grpc-swift_out=. --plugin=/Users/wannes/Downloads/grpc-swift-protobuf/.build/arm64-apple-macosx/debug/protoc-gen-grpc-swift ingest.proto && protoc --swift_out=. datetime.proto
+	cd proto && protoc --swift_out=. ingest.proto && protoc --grpc-swift_out=. --plugin=/Users/wannes/Downloads/grpc-swift-protobuf/.build/arm64-apple-macosx/debug/protoc-gen-grpc-swift ingest.proto && protoc --swift_out=. common.proto
 
 clean-sample:
 	rm -Rf sample/temp

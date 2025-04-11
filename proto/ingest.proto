@@ -1,11 +1,44 @@
 syntax = "proto3";
-import "datetime.proto";
+import "common.proto";
 
 package chronotopia;
 
 service Ingest {
     rpc SubmitBatch (IngestBatch) returns (IngestResponse);
     rpc SubmitDeviceMetadata (DeviceMetadata) returns (IngestResponse);
+    rpc SubmitGoogleMapsTimelineExport (GoogleMapsTimelineExport) returns (IngestResponse);
+}
+
+// Source information for Chronotopia App
+message ChronotopiaAppSource {
+    string app_version = 1;
+}
+
+// Source information for Chronotopia Web
+message ChronotopiaWebSource {
+    string web_version = 1;
+}
+
+// Source information for Chronotopia API
+message ChronotopiaAPISource {
+    string api_version = 1;
+    string used_api_key = 2;
+}
+
+// Source information for Google Maps Timeline export
+message GoogleMapsTimelineSource {
+    string version = 1;
+}
+
+// Source information for Apple Health export
+message AppleHealthSource {
+    string version = 1;
+}
+
+// Source information for external fitness apps
+message FitnessAppSource {
+    string app_name = 1;
+    string app_version = 2;
 }
 
 message IngestBatch {  
@@ -20,6 +53,16 @@ message IngestBatch {
   
   // Batch of visit events
   repeated VisitEvent visits = 6;
+  
+  // Source information about where this data came from
+  oneof source {
+    ChronotopiaAppSource chronotopia_app = 7;
+    ChronotopiaWebSource chronotopia_web = 8;
+    ChronotopiaAPISource chronotopia_api = 9;
+    GoogleMapsTimelineSource google_maps = 10;
+    AppleHealthSource apple_health = 11;
+    FitnessAppSource fitness_app = 12;
+  }
 }
 
 // Location point data
@@ -86,6 +129,12 @@ message VisitEvent {
   
   DateTime arrival = 4;
   DateTime departure = 5;
+  
+  // Semantic information
+  string canonical_label = 6;  // e.g., "home", "work", "restaurant"
+  
+  // External place identifier
+  optional string external_place_id = 8;
 }
 
 // Device metadata
@@ -97,6 +146,16 @@ message DeviceMetadata {
   string device_language = 5;
 }
 
+// Google Maps Timeline Export data
+message GoogleMapsTimelineExport {
+  // Raw JSON content of the Google Maps Timeline export
+  string json_content = 1;
+  
+  // Optional user-provided metadata
+  string export_name = 2;
+  optional DateTime export_date = 3;
+}
+
 // Response to data uploads
 message IngestResponse {
   bool success = 1;
@@ -105,4 +164,9 @@ message IngestResponse {
   // Optional fields for server instructions
   bool pause_tracking = 3;
   int32 recommended_upload_interval = 4;  // in seconds
+  
+  // Processing statistics for timeline exports
+  optional int32 processed_locations = 5;
+  optional int32 processed_activities = 6;
+  optional int32 processed_visits = 7;
 }

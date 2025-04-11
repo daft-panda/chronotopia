@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use log::{debug, trace, warn};
+use log::{debug, info, trace, warn};
 use ordered_float::OrderedFloat;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -9,6 +9,7 @@ use crate::osm_preprocessing::{TileGraph, TileIndex, WaySegment};
 use crate::route_matcher::TileConfig;
 
 // Optimization: Add cache statistics for monitoring
+#[derive(Debug, Clone)]
 struct CacheStats {
     hits: usize,
     misses: usize,
@@ -17,6 +18,7 @@ struct CacheStats {
 }
 
 /// Manages tile loading and caching with LRU eviction
+#[derive(Debug)]
 pub struct TileLoader {
     pub(crate) tile_directory: String,
     pub(crate) loaded_tiles: HashMap<String, TileIndex>,
@@ -464,6 +466,77 @@ impl TileLoader {
 
         // Convert the optimized segment back to a full WaySegment using the tile's metadata
         Ok(opt_segment.to_way_segment(&tile.metadata))
+    }
+
+    /// Get OSM way metadata using a bounding box to select relevant tiles
+    pub fn get_way_metadata_from_bbox(
+        &mut self,
+        bbox: geo::Rect,
+        way_ids: &[u64],
+    ) -> Result<Vec<WaySegment>> {
+        // Create a HashSet of way IDs for faster lookup
+        let way_ids_set: HashSet<u64> = way_ids.iter().cloned().collect();
+
+        // Load tiles that intersect with the bounding box
+        info!("Loading tiles for bounding box: {:?}", bbox);
+        let loaded_tiles = self.load_tile_range(bbox, 0.01, 100)?;
+        info!("Loaded {} tiles for bounding box", loaded_tiles.len());
+
+        // Collect metadata for all requested way IDs
+        let mut metadata = Vec::new();
+        let mut found_ways = HashSet::new();
+
+        for tile_id in loaded_tiles {
+            // Get all segments from this tile
+            let segments = self.get_all_segments_from_tile(&tile_id)?;
+
+            // Extract metadata for segments that match our way IDs
+            for segment in &segments {
+                let way_id = segment.osm_way_id;
+
+                // Skip if not in our requested set or already processed
+                if !way_ids_set.contains(&way_id) || found_ways.contains(&way_id) {
+                    continue;
+                }
+
+                // Extract segment metadata
+                let mut additional_tags = HashMap::new();
+
+                if let Some(meta) = &segment.metadata {
+                    for (key, value) in meta {
+                        match key.as_str() {
+                            // Skip keys that we extract specially
+                            "name" | "highway" | "oneway" | "surface" | "maxspeed" | "lanes" => {}
+                            // Store all other tags
+                            _ => {
+                                additional_tags.insert(key, value);
+                            }
+                        }
+                    }
+                }
+
+                metadata.push(segment.clone());
+                found_ways.insert(way_id);
+            }
+        }
+
+        // Log any ways we couldn't find
+        let missing_ways: Vec<u64> = way_ids_set.difference(&found_ways).cloned().collect();
+        if !missing_ways.is_empty() {
+            warn!(
+                "Could not find metadata for {} OSM ways: {:?}",
+                missing_ways.len(),
+                missing_ways
+            );
+        }
+
+        debug!(
+            "Retrieved metadata for {} out of {} OSM ways",
+            found_ways.len(),
+            way_ids_set.len()
+        );
+
+        Ok(metadata)
     }
 
     // Add a method to access the tile's graph data

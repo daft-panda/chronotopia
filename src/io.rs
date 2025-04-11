@@ -6,7 +6,7 @@ pub(crate) mod google_maps_local_timeline {
     use chrono::{DateTime, FixedOffset, TimeDelta};
     use serde::{Deserialize, Serialize};
 
-    use crate::proto::{LatLon, Point, Trip};
+    use crate::proto::{LatLon, Point};
 
     #[derive(Debug, Serialize, Deserialize, Clone)]
     #[serde(untagged)]
@@ -164,22 +164,6 @@ pub(crate) mod google_maps_local_timeline {
 
         pub probability: String,
     }
-
-    impl From<&TimelineEntry> for Trip {
-        fn from(val: &TimelineEntry) -> Self {
-            let mut points = vec![];
-            for p in &val.timeline_path {
-                if let Some(point) = p.clone().into_point_with_entry(val) {
-                    points.push(point);
-                }
-            }
-            Trip {
-                start: points.first().and_then(|ts| ts.date_time.clone()),
-                points,
-                ..Default::default()
-            }
-        }
-    }
 }
 
 impl From<&DateTime<FixedOffset>> for crate::proto::DateTime {
@@ -198,6 +182,21 @@ impl From<&DateTime<FixedOffset>> for crate::proto::DateTime {
                     nanos: 0,
                 },
             )),
+        }
+    }
+}
+
+impl From<&DateTime<Utc>> for crate::proto::DateTime {
+    fn from(value: &DateTime<Utc>) -> Self {
+        Self {
+            year: value.year() as u32,
+            month: value.month(),
+            day: value.day(),
+            hours: value.hour(),
+            minutes: value.minute(),
+            seconds: value.second(),
+            nanos: value.nanosecond(),
+            time_offset: None,
         }
     }
 }

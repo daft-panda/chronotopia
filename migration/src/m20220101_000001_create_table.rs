@@ -68,13 +68,80 @@ impl MigrationTrait for Migration {
                             .custom(Alias::new("GEOMETRY(LINESTRING, 4326)"))
                             .not_null(),
                     )
-                    .col(date_time(Trips::Date))
+                    .col(
+                        ColumnDef::new(Trips::BoundingBox)
+                            .custom(Alias::new("GEOMETRY(POLYGON, 4326)"))
+                            .not_null(),
+                    )
+                    .col(timestamp_with_time_zone(Trips::StartTime))
+                    .col(timestamp_with_time_zone(Trips::EndTime))
+                    .col(double(Trips::DistanceMeters))
+                    .col(binary_null(Trips::Points))
+                    .col(boolean(Trips::Processed))
+                    .col(json_binary(Trips::OsmWayIds)) // JSON array of OSM way IDs
+                    .col(binary_null(Trips::RouteMatchTrace)) // Binary protobuf data
                     .col(string_null(Trips::Label))
                     .col(string_null(Trips::Notes))
-                    .col(date_time(Trips::LastModified))
+                    .col(string_null(Trips::GeoJson))
+                    .col(timestamp_with_time_zone(Trips::LastModified))
                     .foreign_key(
                         ForeignKey::create()
                             .from(Trips::Table, Trips::UserId)
+                            .to(Users::Table, Users::Id)
+                            .on_update(ForeignKeyAction::Cascade)
+                            .on_delete(ForeignKeyAction::Cascade),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        // Add UserProcessingState table to track processing state
+        manager
+            .create_table(
+                Table::create()
+                    .table(UserProcessingState::Table)
+                    .if_not_exists()
+                    .col(pk_uuid(UserProcessingState::UserId))
+                    .col(timestamp_with_time_zone(
+                        UserProcessingState::LastProcessedTime,
+                    ))
+                    .col(integer(UserProcessingState::TotalTripsGenerated))
+                    .col(integer(UserProcessingState::TotalVisitsDetected))
+                    .col(timestamp_with_time_zone(UserProcessingState::LastUpdated))
+                    .foreign_key(
+                        ForeignKey::create()
+                            .from(UserProcessingState::Table, UserProcessingState::UserId)
+                            .to(Users::Table, Users::Id)
+                            .on_update(ForeignKeyAction::Cascade)
+                            .on_delete(ForeignKeyAction::Cascade),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        // Add ImportSummary table to track processing of imports
+        manager
+            .create_table(
+                Table::create()
+                    .table(ImportSummary::Table)
+                    .if_not_exists()
+                    .col(pk_uuid(ImportSummary::Id))
+                    .col(uuid(ImportSummary::UserId))
+                    .col(string(ImportSummary::ImportType))
+                    .col(string_null(ImportSummary::ImportName))
+                    .col(timestamp_with_time_zone(ImportSummary::ImportDateTime))
+                    .col(integer(ImportSummary::LocationCount))
+                    .col(integer(ImportSummary::ActivityCount))
+                    .col(integer(ImportSummary::VisitCount))
+                    .col(integer(ImportSummary::GeneratedTrips))
+                    .col(boolean(ImportSummary::ProcessingComplete))
+                    .col(timestamp_with_time_zone(ImportSummary::CreateDateTime))
+                    .col(timestamp_with_time_zone_null(
+                        ImportSummary::ProcessedDateTime,
+                    ))
+                    .foreign_key(
+                        ForeignKey::create()
+                            .from(ImportSummary::Table, ImportSummary::UserId)
                             .to(Users::Table, Users::Id)
                             .on_update(ForeignKeyAction::Cascade)
                             .on_delete(ForeignKeyAction::Cascade),
@@ -114,12 +181,13 @@ impl MigrationTrait for Migration {
                 Table::create()
                     .table(IngestBatches::Table)
                     .if_not_exists()
-                    .col(pk_uuid(IngestBatches::Id))
+                    .col(pk_auto(IngestBatches::Id))
                     .col(uuid(IngestBatches::UserId))
                     .col(uuid_null(IngestBatches::DeviceMetadataId))
                     .col(timestamp_with_time_zone(IngestBatches::BatchDateTime))
                     .col(timestamp_with_time_zone(IngestBatches::ReceivedDateTime))
                     .col(boolean_null(IngestBatches::Processed))
+                    .col(json_binary(IngestBatches::SourceInfo))
                     .foreign_key(
                         ForeignKey::create()
                             .from(IngestBatches::Table, IngestBatches::UserId)
@@ -145,7 +213,7 @@ impl MigrationTrait for Migration {
                     .table(UserLocationsIngest::Table)
                     .if_not_exists()
                     .col(pk_auto(UserLocationsIngest::Id)) // Use auto-increment for high-speed inserts
-                    .col(uuid(UserLocationsIngest::BatchId))
+                    .col(integer(UserLocationsIngest::BatchId))
                     .col(double(UserLocationsIngest::Latitude))
                     .col(double(UserLocationsIngest::Longitude))
                     .col(double_null(UserLocationsIngest::Altitude))
@@ -178,7 +246,7 @@ impl MigrationTrait for Migration {
                     .table(UserActivityIngest::Table)
                     .if_not_exists()
                     .col(pk_auto(UserActivityIngest::Id)) // Use auto-increment for high-speed inserts
-                    .col(uuid(UserActivityIngest::BatchId))
+                    .col(integer(UserActivityIngest::BatchId))
                     .col(enumeration(
                         UserActivityIngest::Type,
                         Alias::new("activity_type"),
@@ -209,7 +277,7 @@ impl MigrationTrait for Migration {
                     .table(UserVisitsIngest::Table)
                     .if_not_exists()
                     .col(pk_auto(UserVisitsIngest::Id)) // Use auto-increment for high-speed inserts
-                    .col(uuid(UserVisitsIngest::BatchId))
+                    .col(integer(UserVisitsIngest::BatchId))
                     .col(double(UserVisitsIngest::Latitude))
                     .col(double(UserVisitsIngest::Longitude))
                     .col(double_null(UserVisitsIngest::HorizontalAccuracy))
@@ -217,6 +285,8 @@ impl MigrationTrait for Migration {
                     .col(timestamp_with_time_zone(
                         UserVisitsIngest::DepartureDateTime,
                     ))
+                    .col(string_null(UserVisitsIngest::CanonicalLabel))
+                    .col(string_null(UserVisitsIngest::ExternalPlaceId))
                     .foreign_key(
                         ForeignKey::create()
                             .from(UserVisitsIngest::Table, UserVisitsIngest::BatchId)
@@ -287,6 +357,78 @@ impl MigrationTrait for Migration {
                     .col(UserVisitsIngest::BatchId)
                     .to_owned(),
             )
+            .await?;
+
+        // Add index for the external place ID
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_visit_external_place_id")
+                    .table(UserVisitsIngest::Table)
+                    .col(UserVisitsIngest::ExternalPlaceId)
+                    .to_owned(),
+            )
+            .await?;
+
+        // Add indices for trips
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_trips_user_id")
+                    .table(Trips::Table)
+                    .col(Trips::UserId)
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_trips_start_time")
+                    .table(Trips::Table)
+                    .col(Trips::StartTime)
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_trips_end_time")
+                    .table(Trips::Table)
+                    .col(Trips::EndTime)
+                    .to_owned(),
+            )
+            .await?;
+
+        // Create spatial indices
+        manager
+            .get_connection()
+            .execute_unprepared(&format!(
+                "CREATE INDEX idx_trips_geometry ON {} USING GIST ({})",
+                Trips::Table.to_string(),
+                Trips::Geometry.to_string()
+            ))
+            .await?;
+
+        manager
+            .get_connection()
+            .execute_unprepared(&format!(
+                "CREATE INDEX idx_trips_bbox ON {} USING GIST ({})",
+                Trips::Table.to_string(),
+                Trips::BoundingBox.to_string()
+            ))
+            .await?;
+
+        // Add indices for import summary
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_import_summary_user_id")
+                    .table(ImportSummary::Table)
+                    .col(ImportSummary::UserId)
+                    .to_owned(),
+            )
             .await
     }
 
@@ -302,6 +444,14 @@ impl MigrationTrait for Migration {
 
         manager
             .drop_table(Table::drop().table(UserLocationsIngest::Table).to_owned())
+            .await?;
+
+        manager
+            .drop_table(Table::drop().table(ImportSummary::Table).to_owned())
+            .await?;
+
+        manager
+            .drop_table(Table::drop().table(UserProcessingState::Table).to_owned())
             .await?;
 
         manager
@@ -362,9 +512,17 @@ enum Trips {
     Id,
     UserId,
     Geometry,
-    Date,
+    BoundingBox,
+    StartTime,
+    EndTime,
+    DistanceMeters,
+    Points,
+    Processed,
+    OsmWayIds,
+    RouteMatchTrace,
     Label,
     Notes,
+    GeoJson,
     LastModified,
 }
 
@@ -390,6 +548,7 @@ enum IngestBatches {
     BatchDateTime,
     ReceivedDateTime,
     Processed,
+    SourceInfo,
 }
 
 #[derive(DeriveIden)]
@@ -451,4 +610,33 @@ enum UserVisitsIngest {
     HorizontalAccuracy,
     ArrivalDateTime,
     DepartureDateTime,
+    CanonicalLabel,
+    ExternalPlaceId,
+}
+
+#[derive(DeriveIden)]
+enum UserProcessingState {
+    Table,
+    UserId,
+    LastProcessedTime,
+    TotalTripsGenerated,
+    TotalVisitsDetected,
+    LastUpdated,
+}
+
+#[derive(DeriveIden)]
+enum ImportSummary {
+    Table,
+    Id,
+    UserId,
+    ImportType,
+    ImportName,
+    ImportDateTime,
+    LocationCount,
+    ActivityCount,
+    VisitCount,
+    GeneratedTrips,
+    ProcessingComplete,
+    CreateDateTime,
+    ProcessedDateTime,
 }

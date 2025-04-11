@@ -3,8 +3,9 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { ConnectivityRequest, GetRouteMatchTraceRequest, LatLon, PathfindingDebugInfo, ProcessedTrip, RequestParameters, RouteMatchTrace, TripRequest, Trips, TripSummaries, WindowDebugRequest } from "./chronotopia_pb.js";
-import { Empty, MethodKind, StringValue } from "@bufbuild/protobuf";
+import { LatLon } from "./common_pb.js";
+import { MethodKind, StringValue } from "@bufbuild/protobuf";
+import { ConnectivityRequest, PathfindingDebugInfo, WindowDebugRequest } from "./chronotopia_pb.js";
 
 /**
  * @generated from service chronotopia.Chronotopia
@@ -12,51 +13,6 @@ import { Empty, MethodKind, StringValue } from "@bufbuild/protobuf";
 export const Chronotopia = {
   typeName: "chronotopia.Chronotopia",
   methods: {
-    /**
-     * @generated from rpc chronotopia.Chronotopia.GetTrips
-     */
-    getTrips: {
-      name: "GetTrips",
-      I: RequestParameters,
-      O: Trips,
-      kind: MethodKind.Unary,
-    },
-    /**
-     * @generated from rpc chronotopia.Chronotopia.GetRouteMatchTrace
-     */
-    getRouteMatchTrace: {
-      name: "GetRouteMatchTrace",
-      I: GetRouteMatchTraceRequest,
-      O: RouteMatchTrace,
-      kind: MethodKind.Unary,
-    },
-    /**
-     * @generated from rpc chronotopia.Chronotopia.GetTripSummaries
-     */
-    getTripSummaries: {
-      name: "GetTripSummaries",
-      I: Empty,
-      O: TripSummaries,
-      kind: MethodKind.Unary,
-    },
-    /**
-     * @generated from rpc chronotopia.Chronotopia.GetTripGeoJSON
-     */
-    getTripGeoJSON: {
-      name: "GetTripGeoJSON",
-      I: TripRequest,
-      O: StringValue,
-      kind: MethodKind.Unary,
-    },
-    /**
-     * @generated from rpc chronotopia.Chronotopia.GetProcessedTrip
-     */
-    getProcessedTrip: {
-      name: "GetProcessedTrip",
-      I: TripRequest,
-      O: ProcessedTrip,
-      kind: MethodKind.Unary,
-    },
     /**
      * @generated from rpc chronotopia.Chronotopia.OSMNetworkAroundPoint
      */
