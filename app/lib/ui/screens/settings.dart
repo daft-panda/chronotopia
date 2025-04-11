@@ -1,8 +1,10 @@
 // screens/settings_screen.dart
 import 'package:chronotopia_app/services/background_service.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -21,14 +23,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _showNotification = true;
   bool _receiveServerMessages = true;
 
+  // Server settings
+  String _serverUrl = 'ingest.chronotopia.io';
+  bool _useTLS = true;
+
+  // Authorization
+  String _authToken = '';
+  final _authTokenController = TextEditingController();
+  final _serverUrlController = TextEditingController();
+
   @override
   void initState() {
     super.initState();
     _loadSettings();
   }
 
+  @override
+  void dispose() {
+    _authTokenController.dispose();
+    _serverUrlController.dispose();
+    super.dispose();
+  }
+
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
+    final backgroundService = Provider.of<BackgroundService>(
+      context,
+      listen: false,
+    );
 
     setState(() {
       _trackInLowBattery = prefs.getBool('track_in_low_battery') ?? true;
@@ -38,6 +60,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _startOnBoot = prefs.getBool('start_on_boot') ?? true;
       _showNotification = prefs.getBool('show_notification') ?? true;
       _receiveServerMessages = prefs.getBool('receive_server_messages') ?? true;
+
+      // Server settings
+      _serverUrl = prefs.getString('server_url') ?? 'ingest.chronotopia.io';
+      _serverUrlController.text = _serverUrl;
+      _useTLS = prefs.getBool('use_tls') ?? true;
+
+      // Auth token
+      _authToken = backgroundService.authToken ?? '';
+      _authTokenController.text = _authToken;
     });
   }
 
@@ -52,17 +83,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await prefs.setBool('show_notification', _showNotification);
     await prefs.setBool('receive_server_messages', _receiveServerMessages);
 
+    // Save server settings
+    await prefs.setString('server_url', _serverUrlController.text);
+    await prefs.setBool('use_tls', _useTLS);
+
     // Apply settings to the service
     final backgroundService = Provider.of<BackgroundService>(
       context,
       listen: false,
     );
+
+    // Update auth token if it changed
+    if (_authTokenController.text != _authToken) {
+      await backgroundService.setAuthToken(_authTokenController.text);
+    }
+
+    // Update server settings in the service
+    await backgroundService.setServerSettings(
+      _serverUrlController.text,
+      _useTLS,
+    );
+
     await backgroundService.applySettings();
 
     // Show confirmation
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Settings saved')));
+    if (mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Settings saved')));
+    }
   }
 
   @override
@@ -71,6 +120,92 @@ class _SettingsScreenState extends State<SettingsScreen> {
       appBar: AppBar(title: const Text('Settings')),
       body: ListView(
         children: [
+          const Padding(
+            padding: EdgeInsets.all(16.0),
+            child: Text(
+              'Server Connection',
+              style: TextStyle(fontSize: 18.0, fontWeight: FontWeight.bold),
+            ),
+          ),
+
+          // Server URL
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16.0),
+            child: TextField(
+              controller: _serverUrlController,
+              decoration: const InputDecoration(
+                labelText: 'Server URL',
+                helperText: 'Address of the ingest server',
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 16.0),
+
+          // Use TLS switch
+          SwitchListTile(
+            title: const Text('Use TLS/SSL'),
+            subtitle: const Text('Enable secure connection to server'),
+            value: _useTLS,
+            onChanged: (value) {
+              setState(() {
+                _useTLS = value;
+              });
+            },
+          ),
+
+          const SizedBox(height: 16.0),
+
+          // Authorization token
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16.0),
+            child: TextField(
+              controller: _authTokenController,
+              decoration: InputDecoration(
+                labelText: 'Authorization Token',
+                helperText: 'Token used for API authentication',
+                suffixIcon: IconButton(
+                  icon: const Icon(Icons.refresh),
+                  tooltip: 'Generate new token',
+                  onPressed: () {
+                    final newToken = const Uuid().v4();
+                    setState(() {
+                      _authTokenController.text = newToken;
+                    });
+                  },
+                ),
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 8.0),
+
+          // Copy token button
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16.0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton.icon(
+                  icon: const Icon(Icons.copy),
+                  label: const Text('Copy Token'),
+                  onPressed: () {
+                    Clipboard.setData(
+                      ClipboardData(text: _authTokenController.text),
+                    );
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Token copied to clipboard'),
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+
+          const Divider(),
+
           const Padding(
             padding: EdgeInsets.all(16.0),
             child: Text(

@@ -4,11 +4,21 @@ proto:
 	cd proto/ && npx --prefix ../web buf generate
 
 proto-swift:
-	cd proto && protoc --swift_out=.  ingest.proto && --swift_out=. --plugin=/Users/wannes/Downloads/grpc-swift-protobuf/.build/arm64-apple-macosx/debug/protoc-gen-swift-tool  ingest.proto && \
-	protoc --swift_out=. datetime.proto
+	cd proto && protoc --swift_out=. ingest.proto && protoc --grpc-swift_out=. --plugin=/Users/wannes/Downloads/grpc-swift-protobuf/.build/arm64-apple-macosx/debug/protoc-gen-grpc-swift ingest.proto && protoc --swift_out=. datetime.proto
 
 clean-sample:
 	rm -Rf sample/temp
 	rm -Rf sample/tiles
 	rm sample/*.geojson
 
+clippy:
+	cargo clippy --fix --allow-dirty
+
+migrate-up:
+	sea-orm-cli migrate up
+
+migrate-down:
+	sea-orm-cli migrate down
+
+generate-db-entity:
+	sea-orm-cli generate entity -o src/entity

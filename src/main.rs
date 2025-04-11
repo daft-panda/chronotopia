@@ -1,5 +1,8 @@
+#![allow(dead_code, unused_variables)]
+mod auth;
 mod debug;
 mod entity;
+mod ingest;
 mod io;
 mod osm_preprocessing;
 mod route_matcher;
@@ -7,10 +10,9 @@ mod routing;
 mod tile_loader;
 mod user_management;
 
-use std::collections::{HashMap, HashSet};
-use std::path::Path;
-use std::sync::Arc;
-
+use crate::auth::auth_interceptor;
+use crate::ingest::IngestService;
+use crate::proto::ingest_server::IngestServer;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use geo::{Coord, Distance, Haversine, Point};
@@ -30,6 +32,9 @@ use route_matcher::{
 };
 use sea_orm::{Database, DatabaseConnection};
 use serde_json::json;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+use std::sync::Arc;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::sync::{Mutex, RwLock};
@@ -90,7 +95,7 @@ async fn main() -> Result<()> {
     let location_history: Vec<LocationHistoryEntry> = serde_json::from_slice(&contents)?;
     info!("Loaded {} location history entries", location_history.len());
 
-    let addr = "[::1]:10000".parse()?;
+    let addr = "[::]:10000".parse()?;
     let chronotopia_service = ChronotopiaService::new(location_history, route_matcher).await?;
 
     // Start trip processing in background
@@ -107,6 +112,10 @@ async fn main() -> Result<()> {
     let user_management_service = UserManagementService::new(db.clone());
     let user_management_svc = UserManagementServer::new(user_management_service);
 
+    // Create the authenticated ingest service with middleware
+    let ingest_service = IngestService::new(db.clone());
+    let ingest_svc = IngestServer::with_interceptor(ingest_service, auth_interceptor);
+
     let cors = CorsLayer::new()
         .allow_methods([Method::GET, Method::POST])
         .allow_origin(Any)
@@ -119,6 +128,7 @@ async fn main() -> Result<()> {
         .layer(GrpcWebLayer::new())
         .add_service(svc)
         .add_service(user_management_svc)
+        .add_service(ingest_svc)
         .serve(addr)
         .await
         .unwrap();

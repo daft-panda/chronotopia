@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, Timelike, Utc};
 
 use crate::proto::date_time::TimeOffset;
 

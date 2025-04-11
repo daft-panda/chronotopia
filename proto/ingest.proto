@@ -20,9 +20,6 @@ message IngestBatch {
   
   // Batch of visit events
   repeated VisitEvent visits = 6;
-  
-  // Device metadata
-  DeviceMetadata device_metadata = 7;
 }
 
 // Location point data
@@ -42,19 +39,18 @@ message LocationPoint {
   double speed = 8;
   double bearing = 9;
   
-  // Timestamps
+  // Timing
   DateTime dateTime = 10;
   
   // Location provider information
-  string provider = 11;
-  bool is_mock_location = 12;
+  bool is_mock_location = 11;
   
   // For indoor positioning (iOS)
-  int32 floor_level = 13;
+  optional int32 floor_level = 12;
   
   // Device state information
-  int32 battery_level = 14;
-  string network_type = 15;
+  uint32 battery_level = 13;
+  optional string network_type = 14;
 }
 
 // Activity recognition event
@@ -74,13 +70,12 @@ message ActivityEvent {
   int32 confidence = 2;  // 0-100
   
   // Timestamps
-  int64 timestamp = 3;
-  int64 start_time = 4;
-  int64 end_time = 5;
+  DateTime start = 3;
+  optional DateTime end = 4;
   
   // Movement data
-  int64 step_count = 6;
-  double distance = 7;
+  optional int64 step_count = 5;
+  optional double distance = 6;
 }
 
 // Visit events (iOS-specific but we'll handle on Android too)
@@ -89,8 +84,8 @@ message VisitEvent {
   double longitude = 2;
   double horizontal_accuracy = 3;
   
-  int64 arrival_time = 4;
-  int64 departure_time = 5;
+  DateTime arrival = 4;
+  DateTime departure = 5;
 }
 
 // Device metadata

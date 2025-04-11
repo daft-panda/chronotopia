@@ -1,526 +1,346 @@
-// services/enhanced_background_service.dart
 import 'dart:async';
 import 'dart:io';
-import 'package:chronotopia_app/services/activity_service.dart';
-import 'package:chronotopia_app/services/data_sync_service.dart';
-import 'package:chronotopia_app/services/location_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:device_info_plus/device_info_plus.dart';
-import 'package:workmanager/workmanager.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-
-// Background tasks constants
-const String locationTrackingTask = "io.chronotopia.app.locationTrackingTask";
-const String dataUploadTask = "io.chronotopia.app.dataUploadTask";
-const String serviceRestartTask = "io.chronotopia.app.serviceRestartTask";
-
-@pragma('vm:entry-point')
-void callbackDispatcher() {
-  Workmanager().executeTask((task, inputData) async {
-    switch (task) {
-      case locationTrackingTask:
-        // This is for when the service gets killed but Workmanager stays alive
-        await _handleLocationTrackingTask();
-        break;
-      case dataUploadTask:
-        await _handleDataUploadTask();
-        break;
-      case serviceRestartTask:
-        await _handleServiceRestartTask();
-        break;
-    }
-    return true;
-  });
-}
-
-Future<void> _handleLocationTrackingTask() async {
-  // Check if tracking is enabled
-  final prefs = await SharedPreferences.getInstance();
-  final isTrackingEnabled = prefs.getBool('tracking_enabled') ?? false;
-
-  if (!isTrackingEnabled) {
-    return;
-  }
-
-  // Start native services if they're not running
-  final methodChannel = MethodChannel('io.chronotopia.app/service');
-  final isRunning =
-      await methodChannel.invokeMethod<bool>('isServiceRunning') ?? false;
-
-  if (!isRunning) {
-    await methodChannel.invokeMethod('startServices');
-  }
-}
-
-Future<void> _handleDataUploadTask() async {
-  // Check if tracking is enabled
-  final prefs = await SharedPreferences.getInstance();
-  final isTrackingEnabled = prefs.getBool('tracking_enabled') ?? false;
-  final syncOnWifiOnly = prefs.getBool('sync_on_wifi_only') ?? false;
-
-  if (!isTrackingEnabled) {
-    return;
-  }
-
-  // Check connectivity if Wi-Fi only is enabled
-  if (syncOnWifiOnly) {
-    final connectivity = await Connectivity().checkConnectivity();
-    if (connectivity != ConnectivityResult.wifi) {
-      // Skip upload because we're not on Wi-Fi
-      return;
-    }
-  }
-
-  // Perform data upload
-  final dataSyncService = DataSyncService();
-  await dataSyncService.initialize();
-}
-
-Future<void> _handleServiceRestartTask() async {
-  // Check if tracking is enabled
-  final prefs = await SharedPreferences.getInstance();
-  final isTrackingEnabled = prefs.getBool('tracking_enabled') ?? false;
-
-  if (!isTrackingEnabled) {
-    return;
-  }
-
-  // Force restart the native services
-  final methodChannel = MethodChannel('io.chronotopia.app/service');
-  await methodChannel.invokeMethod('restartServices');
-}
+import 'package:uuid/uuid.dart';
 
 class BackgroundService extends ChangeNotifier {
-  final LocationService _locationService = LocationService();
-  final ActivityService _activityService = ActivityService();
-  final DataSyncService _dataSyncService = DataSyncService();
-
-  final FlutterLocalNotificationsPlugin _notificationsPlugin =
-      FlutterLocalNotificationsPlugin();
-
-  // Platform channels for native communication
-  final MethodChannel _serviceChannel = const MethodChannel(
+  // Method channels for communication with native code
+  static const MethodChannel _serviceChannel = MethodChannel(
     'io.chronotopia.app/service',
   );
-  final MethodChannel _batteryChannel = const MethodChannel(
+  static const MethodChannel _batteryChannel = MethodChannel(
     'io.chronotopia.app/battery',
   );
+  static const MethodChannel _settingsChannel = MethodChannel(
+    'io.chronotopia.app/settings',
+  );
 
+  // Event channels for streaming data
+  static const EventChannel _locationEventChannel = EventChannel(
+    'io.chronotopia.app/location_stream',
+  );
+  static const EventChannel _activityEventChannel = EventChannel(
+    'io.chronotopia.app/activity_stream',
+  );
+
+  // Service state
   bool _isRunning = false;
-  String _manufacturer = 'unknown';
-  Timer? _heartbeatTimer;
-  Timer? _backupLocationTimer;
+  bool _isInitialized = false;
+  String? _authToken;
+  String _serverUrl = 'ingest.chronotopia.io';
+  bool _useTLS = true;
 
+  // Upload status cache
+  Map<String, dynamic> _uploadStatus = {};
+  DateTime? _lastStatusUpdate;
+
+  // Service state getters
   bool get isRunning => _isRunning;
+  bool get isInitialized => _isInitialized;
+  String? get authToken => _authToken;
+  String get serverUrl => _serverUrl;
+  bool get useTLS => _useTLS;
 
-  BackgroundService() {
-    _initializeDeviceInfo();
-  }
-
-  Future<void> _initializeDeviceInfo() async {
-    final deviceInfo = DeviceInfoPlugin();
-
-    if (Platform.isAndroid) {
-      final androidInfo = await deviceInfo.androidInfo;
-      _manufacturer = androidInfo.manufacturer.toLowerCase();
-    }
-  }
-
+  // Initialize the service
   Future<void> initialize() async {
-    await _initializeNotifications();
-    await _initializeWorkManager();
-    // await _initializeFirebaseMessaging();
+    try {
+      // Check if service is already running
+      final isRunning = await _serviceChannel.invokeMethod('isServiceRunning');
+      _isRunning = isRunning ?? false;
 
-    await _locationService.initialize();
-    await _activityService.initialize();
-    await _dataSyncService.initialize();
+      // Load or generate auth token
+      await _loadOrGenerateAuthToken();
 
-    // Check if service was running before
-    final prefs = await SharedPreferences.getInstance();
-    final wasRunning = prefs.getBool('tracking_enabled') ?? false;
+      // Load server settings
+      await _loadServerSettings();
 
-    if (wasRunning) {
-      await startTracking();
+      // Set up event listeners
+      _setupEventListeners();
+
+      _isInitialized = true;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Error initializing background service: $e');
     }
   }
 
-  Future<void> _initializeNotifications() async {
-    const AndroidInitializationSettings initializationSettingsAndroid =
-        AndroidInitializationSettings('ic_notification');
-
-    final DarwinInitializationSettings initializationSettingsIOS =
-        DarwinInitializationSettings(
-          requestAlertPermission: false,
-          requestBadgePermission: false,
-          requestSoundPermission: false,
-        );
-
-    final InitializationSettings initializationSettings =
-        InitializationSettings(
-          android: initializationSettingsAndroid,
-          iOS: initializationSettingsIOS,
-        );
-
-    await _notificationsPlugin.initialize(initializationSettings);
-  }
-
-  Future<void> _initializeWorkManager() async {
-    await Workmanager().initialize(callbackDispatcher, isInDebugMode: false);
-  }
-
-  Future<void> startTracking() async {
-    if (_isRunning) return;
-
-    // Save tracking state
+  // Load existing auth token or generate a new one
+  Future<void> _loadOrGenerateAuthToken() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('tracking_enabled', true);
+    _authToken = prefs.getString('auth_token');
 
-    // Request ignoring battery optimizations on Android
+    if (_authToken == null) {
+      // Generate a new UUID v4 token
+      final newToken = const Uuid().v4();
+      await setAuthToken(newToken);
+    }
+  }
+
+  // Load server settings from preferences
+  Future<void> _loadServerSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    _serverUrl = prefs.getString('server_url') ?? 'ingest.chronotopia.io';
+    _useTLS = prefs.getBool('use_tls') ?? true;
+  }
+
+  // Set a new authorization token
+  Future<void> setAuthToken(String token) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('auth_token', token);
+    _authToken = token;
+
+    // Pass it to the native code
+    if (Platform.isIOS) {
+      try {
+        await _serviceChannel.invokeMethod('setAuthToken', {'token': token});
+      } catch (e) {
+        debugPrint('Error setting auth token in iOS: $e');
+      }
+    }
+
+    // For Android, we pass it via settings method
     if (Platform.isAndroid) {
-      await _requestBatteryOptimizationExemption();
+      try {
+        await _serviceChannel.invokeMethod('setAuthToken', {'token': token});
+      } catch (e) {
+        debugPrint('Error setting auth token in Android: $e');
+        // If the method isn't implemented in Android yet, apply settings
+        await applySettings();
+      }
     }
 
-    // Start native services
-    await _locationService.startTracking();
-    await _activityService.startTracking();
-    await _dataSyncService.startPeriodicSync();
-
-    // Show notification
-    await _showTrackingNotification();
-
-    // Register work manager tasks for background processing
-    await _registerWorkManagerTasks();
-
-    // Start heartbeat timer to check service health
-    _startHeartbeatTimer();
-
-    // Start backup timer that uses Flutter's timer to track location
-    // if all else fails (works when app is in foreground)
-    _startBackupLocationTimer();
-
-    _isRunning = true;
     notifyListeners();
   }
 
+  // Set server settings
+  Future<void> setServerSettings(String serverUrl, bool useTLS) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('server_url', serverUrl);
+    await prefs.setBool('use_tls', useTLS);
+
+    _serverUrl = serverUrl;
+    _useTLS = useTLS;
+
+    // Pass the settings to native code
+    if (Platform.isIOS) {
+      try {
+        await _serviceChannel.invokeMethod('setServerSettings', {
+          'serverUrl': serverUrl,
+          'useTLS': useTLS,
+        });
+      } catch (e) {
+        debugPrint('Error setting server settings in iOS: $e');
+      }
+    }
+
+    // For Android
+    if (Platform.isAndroid) {
+      try {
+        await _serviceChannel.invokeMethod('setServerSettings', {
+          'serverUrl': serverUrl,
+          'useTLS': useTLS,
+        });
+      } catch (e) {
+        debugPrint('Error setting server settings in Android: $e');
+        // If the method isn't implemented in Android yet, apply settings
+        await applySettings();
+      }
+    }
+
+    notifyListeners();
+  }
+
+  // Get upload status information
+  Future<Map<String, dynamic>> getUploadStatus() async {
+    try {
+      // Don't request status too frequently (max once per second)
+      final now = DateTime.now();
+      if (_lastStatusUpdate != null &&
+          now.difference(_lastStatusUpdate!).inSeconds < 1) {
+        return _uploadStatus;
+      }
+
+      final status = await _serviceChannel.invokeMethod('getUploadStatus');
+      if (status is Map) {
+        _uploadStatus = Map<String, dynamic>.from(status);
+        _lastStatusUpdate = now;
+      }
+      return _uploadStatus;
+    } catch (e) {
+      debugPrint('Error getting upload status: $e');
+      return {'error': e.toString()};
+    }
+  }
+
+  // Force an immediate sync
+  Future<void> forceSyncNow() async {
+    try {
+      await _serviceChannel.invokeMethod('forceSyncNow');
+    } catch (e) {
+      debugPrint('Error forcing sync: $e');
+    }
+  }
+
+  // Start tracking
+  Future<void> startTracking() async {
+    try {
+      await _serviceChannel.invokeMethod('startServices');
+      _isRunning = true;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Error starting tracking: $e');
+    }
+  }
+
+  // Stop tracking
   Future<void> stopTracking() async {
-    if (!_isRunning) return;
-
-    // Save tracking state
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('tracking_enabled', false);
-
-    // Stop native services
-    await _locationService.stopTracking();
-    await _activityService.stopTracking();
-    await _dataSyncService.stopPeriodicSync();
-
-    // Cancel all work manager tasks
-    await Workmanager().cancelAll();
-
-    // Remove notification
-    await _notificationsPlugin.cancel(1);
-
-    // Stop timers
-    _heartbeatTimer?.cancel();
-    _backupLocationTimer?.cancel();
-
-    _isRunning = false;
-    notifyListeners();
+    try {
+      await _serviceChannel.invokeMethod('stopServices');
+      _isRunning = false;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Error stopping tracking: $e');
+    }
   }
 
+  // Restart tracking services
+  Future<void> restartTracking() async {
+    try {
+      await _serviceChannel.invokeMethod('restartServices');
+      _isRunning = true;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Error restarting tracking: $e');
+    }
+  }
+
+  // Apply settings from shared preferences
   Future<void> applySettings() async {
-    final prefs = await SharedPreferences.getInstance();
-    final trackInLowBattery = prefs.getBool('track_in_low_battery') ?? true;
-    final locationAccuracy = prefs.getInt('location_accuracy') ?? 1;
-    final uploadFrequency = prefs.getInt('upload_frequency') ?? 1;
-    final syncOnWifiOnly = prefs.getBool('sync_on_wifi_only') ?? false;
-    final showNotification = prefs.getBool('show_notification') ?? true;
-    final serverUrl = prefs.getString('server_url') ?? "ingest.chronotopia.io";
-
-    // Apply settings to services
-    await _serviceChannel.invokeMethod('applySettings', {
-      'trackInLowBattery': trackInLowBattery,
-      'locationAccuracy': locationAccuracy,
-      'uploadFrequency': uploadFrequency,
-      'syncOnWifiOnly': syncOnWifiOnly,
-      'serverUrl': serverUrl,
-    });
-
-    // Update notification visibility
-    if (showNotification && _isRunning) {
-      await _showTrackingNotification();
-    } else {
-      await _notificationsPlugin.cancel(1);
-    }
-
-    // Re-register work manager tasks with new frequencies
-    if (_isRunning) {
-      await _registerWorkManagerTasks();
-    }
-  }
-
-  Future<void> _requestBatteryOptimizationExemption() async {
     try {
-      bool isExempt =
-          await _batteryChannel.invokeMethod(
-            'isIgnoringBatteryOptimizations',
-          ) ??
-          false;
-
-      if (!isExempt) {
-        // Request exemption
-        await _batteryChannel.invokeMethod(
-          'requestBatteryOptimizationExemption',
-        );
-
-        // Also apply manufacturer-specific optimizations
-        await _applyManufacturerSpecificOptimizations();
-      }
-    } catch (e) {
-      print('Failed to request battery optimization exemption: $e');
-    }
-  }
-
-  Future<void> _applyManufacturerSpecificOptimizations() async {
-    try {
-      // Different manufacturers have different ways of handling background services
-      if (_manufacturer.contains('xiaomi') || _manufacturer.contains('redmi')) {
-        await _serviceChannel.invokeMethod('applyXiaomiOptimizations');
-      } else if (_manufacturer.contains('samsung')) {
-        await _serviceChannel.invokeMethod('applySamsungOptimizations');
-      } else if (_manufacturer.contains('huawei')) {
-        await _serviceChannel.invokeMethod('applyHuaweiOptimizations');
-      } else if (_manufacturer.contains('oppo') ||
-          _manufacturer.contains('oneplus') ||
-          _manufacturer.contains('realme')) {
-        await _serviceChannel.invokeMethod('applyOppoOptimizations');
-      }
-    } catch (e) {
-      print('Failed to apply manufacturer optimizations: $e');
-    }
-  }
-
-  Future<void> _showTrackingNotification() async {
-    final prefs = await SharedPreferences.getInstance();
-    final showNotification = prefs.getBool('show_notification') ?? true;
-
-    if (!showNotification) {
-      return;
-    }
-
-    const AndroidNotificationDetails androidPlatformChannelSpecifics =
-        AndroidNotificationDetails(
-          'tracking_channel',
-          'Location Tracking',
-          channelDescription: 'Used for location tracking service',
-          importance: Importance.low,
-          priority: Priority.low,
-          ongoing: true,
-          showWhen: false,
-        );
-
-    const DarwinNotificationDetails iOSPlatformChannelSpecifics =
-        DarwinNotificationDetails(
-          presentAlert: false,
-          presentBadge: false,
-          presentSound: false,
-        );
-
-    const NotificationDetails platformChannelSpecifics = NotificationDetails(
-      android: androidPlatformChannelSpecifics,
-      iOS: iOSPlatformChannelSpecifics,
-    );
-
-    await _notificationsPlugin.show(
-      1,
-      'Trip Tracker Active',
-      'Tracking your trips and visited places',
-      platformChannelSpecifics,
-    );
-  }
-
-  Future<void> _registerWorkManagerTasks() async {
-    // Get the settings
-    final prefs = await SharedPreferences.getInstance();
-    final uploadFrequency = prefs.getInt('upload_frequency') ?? 1;
-
-    // Convert upload frequency to actual intervals
-    int uploadIntervalMinutes;
-    switch (uploadFrequency) {
-      case 0: // Low
-        uploadIntervalMinutes = 120; // 2 hours
-        break;
-      case 1: // Balanced
-        uploadIntervalMinutes = 30; // 30 minutes
-        break;
-      case 2: // High
-        uploadIntervalMinutes = 15; // 15 minutes
-        break;
-      default:
-        uploadIntervalMinutes = 30;
-    }
-
-    // Cancel existing tasks
-    await Workmanager().cancelAll();
-
-    // Register location tracking task (runs more frequently, every 15 minutes)
-    await Workmanager().registerPeriodicTask(
-      locationTrackingTask,
-      locationTrackingTask,
-      frequency: Duration(minutes: 15),
-      constraints: Constraints(
-        networkType: NetworkType.not_required,
-        requiresBatteryNotLow: false,
-        requiresCharging: false,
-        requiresDeviceIdle: false,
-      ),
-      initialDelay: Duration(minutes: 1),
-      backoffPolicy: BackoffPolicy.linear,
-      existingWorkPolicy: ExistingWorkPolicy.replace,
-    );
-
-    // Register data upload task (runs based on frequency setting)
-    await Workmanager().registerPeriodicTask(
-      dataUploadTask,
-      dataUploadTask,
-      frequency: Duration(minutes: uploadIntervalMinutes),
-      constraints: Constraints(
-        networkType: NetworkType.connected,
-        requiresBatteryNotLow: false,
-        requiresCharging: false,
-        requiresDeviceIdle: false,
-      ),
-      initialDelay: Duration(minutes: 5),
-      backoffPolicy: BackoffPolicy.linear,
-      existingWorkPolicy: ExistingWorkPolicy.replace,
-    );
-
-    // Register service restart task (runs every 6 hours)
-    // This is a last resort measure to restart services if they get killed
-    await Workmanager().registerPeriodicTask(
-      serviceRestartTask,
-      serviceRestartTask,
-      frequency: Duration(hours: 6),
-      constraints: Constraints(
-        networkType: NetworkType.not_required,
-        requiresBatteryNotLow: false,
-        requiresCharging: false,
-        requiresDeviceIdle: false,
-      ),
-      initialDelay: Duration(hours: 1),
-      backoffPolicy: BackoffPolicy.linear,
-      existingWorkPolicy: ExistingWorkPolicy.replace,
-    );
-
-    // Schedule one-time task that runs soon to ensure services are running
-    await Workmanager().registerOneOffTask(
-      'immediate_service_check',
-      locationTrackingTask,
-      initialDelay: Duration(minutes: 1),
-      constraints: Constraints(
-        networkType: NetworkType.not_required,
-        requiresBatteryNotLow: false,
-        requiresCharging: false,
-        requiresDeviceIdle: false,
-      ),
-    );
-  }
-
-  void _startHeartbeatTimer() {
-    // Cancel existing timer if any
-    _heartbeatTimer?.cancel();
-
-    // Run every 5 minutes
-    _heartbeatTimer = Timer.periodic(const Duration(minutes: 5), (timer) async {
-      await _checkServiceHealth();
-    });
-  }
-
-  Future<void> _checkServiceHealth() async {
-    try {
-      // Check if native services are still running
-      final isServiceRunning =
-          await _serviceChannel.invokeMethod<bool>('isServiceRunning') ?? false;
-
-      if (!isServiceRunning && _isRunning) {
-        // Services have been killed, try to restart them
-        print('Services not running, attempting to restart...');
-        await _serviceChannel.invokeMethod('startServices');
-
-        // Show notification to user
-        const AndroidNotificationDetails androidPlatformChannelSpecifics =
-            AndroidNotificationDetails(
-              'service_channel',
-              'Service Status',
-              channelDescription: 'Used for service status notifications',
-              importance: Importance.high,
-              priority: Priority.high,
-            );
-
-        const NotificationDetails platformChannelSpecifics =
-            NotificationDetails(android: androidPlatformChannelSpecifics);
-
-        await _notificationsPlugin.show(
-          2,
-          'Tracking Restarted',
-          'Trip Tracker had to restart tracking services',
-          platformChannelSpecifics,
-        );
-      }
-
-      // Check battery level and adjust tracking frequency if needed
-      await _checkBatteryAndAdjust();
-    } catch (e) {
-      print('Error checking service health: $e');
-    }
-  }
-
-  Future<void> _checkBatteryAndAdjust() async {
-    try {
-      final batteryLevel =
-          await _batteryChannel.invokeMethod<int>('getBatteryLevel') ?? 100;
-      final isCharging =
-          await _batteryChannel.invokeMethod<bool>('isCharging') ?? false;
       final prefs = await SharedPreferences.getInstance();
       final trackInLowBattery = prefs.getBool('track_in_low_battery') ?? true;
+      final locationAccuracy = prefs.getInt('location_accuracy') ?? 1;
+      final uploadFrequency = prefs.getInt('upload_frequency') ?? 1;
+      final syncOnWifiOnly = prefs.getBool('sync_on_wifi_only') ?? false;
+      final serverUrl =
+          prefs.getString('server_url') ?? 'ingest.chronotopia.io';
+      final useTLS = prefs.getBool('use_tls') ?? true;
+      final authToken = prefs.getString('auth_token') ?? const Uuid().v4();
 
-      // If battery is low and not charging, and user doesn't want to track in low battery
-      if (batteryLevel < 20 && !isCharging && !trackInLowBattery) {
-        // Reduce tracking frequency
-        await _serviceChannel.invokeMethod('setLowPowerMode', true);
-      } else {
-        // Normal tracking frequency
-        await _serviceChannel.invokeMethod('setLowPowerMode', false);
-      }
+      await _serviceChannel.invokeMethod('applySettings', {
+        'trackInLowBattery': trackInLowBattery,
+        'locationAccuracy': locationAccuracy,
+        'uploadFrequency': uploadFrequency,
+        'syncOnWifiOnly': syncOnWifiOnly,
+        'serverUrl': serverUrl,
+        'useTLS': useTLS,
+        'authToken': authToken,
+      });
     } catch (e) {
-      print('Error checking battery status: $e');
+      debugPrint('Error applying settings: $e');
     }
   }
 
-  void _startBackupLocationTimer() {
-    // Cancel existing timer if any
-    _backupLocationTimer?.cancel();
+  // Set up event listeners for location and activity events
+  void _setupEventListeners() {
+    // Location events
+    _locationEventChannel.receiveBroadcastStream().listen(
+      (event) {
+        // Parse location data
+        debugPrint('Location update: $event');
+        // Here you could process and store the location data
+      },
+      onError: (error) {
+        debugPrint('Error in location stream: $error');
+      },
+    );
 
-    // This is a backup mechanism that only works when the app is in the foreground
-    // But it might help in some edge cases where the service gets killed
-    // Run every 2 minutes
-    _backupLocationTimer = Timer.periodic(const Duration(minutes: 2), (
-      timer,
-    ) async {
-      if (!_isRunning) {
-        timer.cancel();
-        return;
-      }
+    // Activity events
+    _activityEventChannel.receiveBroadcastStream().listen(
+      (event) {
+        // Parse activity data
+        debugPrint('Activity update: $event');
+        // Here you could process and store the activity data
+      },
+      onError: (error) {
+        debugPrint('Error in activity stream: $error');
+      },
+    );
+  }
 
-      try {
-        // Request a single location update and store it
-        await _serviceChannel.invokeMethod('requestSingleLocationUpdate');
-      } catch (e) {
-        print('Error requesting backup location: $e');
-      }
-    });
+  // Get battery level
+  Future<int> getBatteryLevel() async {
+    try {
+      final level = await _batteryChannel.invokeMethod('getBatteryLevel');
+      return level ?? -1;
+    } catch (e) {
+      debugPrint('Error getting battery level: $e');
+      return -1;
+    }
+  }
+
+  // Check if device is charging
+  Future<bool> isCharging() async {
+    try {
+      final charging = await _batteryChannel.invokeMethod('isCharging');
+      return charging ?? false;
+    } catch (e) {
+      debugPrint('Error checking if device is charging: $e');
+      return false;
+    }
+  }
+
+  // Request battery optimization exemption (Android only)
+  Future<bool> requestBatteryOptimizationExemption() async {
+    if (!Platform.isAndroid) return true;
+
+    try {
+      final result = await _batteryChannel.invokeMethod(
+        'requestBatteryOptimizationExemption',
+      );
+      return result ?? false;
+    } catch (e) {
+      debugPrint('Error requesting battery optimization exemption: $e');
+      return false;
+    }
+  }
+
+  // Open relevant settings
+  Future<void> openBatterySettings() async {
+    try {
+      await _settingsChannel.invokeMethod('openBatteryOptimizationSettings');
+    } catch (e) {
+      debugPrint('Error opening battery settings: $e');
+    }
+  }
+
+  Future<void> openLocationSettings() async {
+    try {
+      await _settingsChannel.invokeMethod('openLocationSettings');
+    } catch (e) {
+      debugPrint('Error opening location settings: $e');
+    }
+  }
+
+  Future<void> openAppSettings() async {
+    try {
+      await _settingsChannel.invokeMethod('openAppSettings');
+    } catch (e) {
+      debugPrint('Error opening app settings: $e');
+    }
+  }
+
+  // Generate a random auth token (for testing)
+  Future<void> generateRandomAuthToken() async {
+    final newToken = const Uuid().v4();
+    await setAuthToken(newToken);
+  }
+
+  @override
+  void dispose() {
+    // Clean up resources
+    super.dispose();
   }
 }

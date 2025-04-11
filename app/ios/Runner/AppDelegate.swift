@@ -34,6 +34,7 @@ import workmanager
 
         // Create LocationManager and MotionActivity instances
         let locationManager = LocationManager()
+        locationManager.initializeLocationManager()
         let motionActivity = MotionActivity()
 
         // Register them with the appropriate channels

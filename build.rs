@@ -5,6 +5,7 @@ fn main() {
                 "proto/chronotopia.proto",
                 "proto/datetime.proto",
                 "proto/user_management.proto",
+                "proto/ingest.proto",
             ],
             &["proto"],
         )

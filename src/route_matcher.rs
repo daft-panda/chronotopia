@@ -109,7 +109,7 @@ pub(crate) struct SegmentCandidate {
 }
 
 #[derive(Debug, Clone)]
-pub struct PathfindingDebugInfo {
+pub(crate) struct PathfindingDebugInfo {
     pub start_point_idx: usize,
     pub end_point_idx: usize,
     pub start_candidates: Vec<SegmentCandidate>,
@@ -691,7 +691,10 @@ impl RouteMatcher {
                 graph.add_edge(segment_id, connected_id, cost);
 
                 // If the segment is bidirectional, add reverse edge too (but only if target isn't one-way)
-                if !segment.is_oneway && !connected_segment.is_oneway && !graph.contains_edge(connected_id, segment_id) {
+                if !segment.is_oneway
+                    && !connected_segment.is_oneway
+                    && !graph.contains_edge(connected_id, segment_id)
+                {
                     graph.add_edge(connected_id, segment_id, cost);
                 }
             }

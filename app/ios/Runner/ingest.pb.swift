@@ -20,54 +20,35 @@ fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAP
   typealias Version = _2
 }
 
-struct Chronotopia_IngestBatch: @unchecked Sendable {
+struct Chronotopia_IngestBatch: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
   /// DateTime when the packet was created
   var dateTime: Chronotopia_DateTime {
-    get {return _storage._dateTime ?? Chronotopia_DateTime()}
-    set {_uniqueStorage()._dateTime = newValue}
+    get {return _dateTime ?? Chronotopia_DateTime()}
+    set {_dateTime = newValue}
   }
   /// Returns true if `dateTime` has been explicitly set.
-  var hasDateTime: Bool {return _storage._dateTime != nil}
+  var hasDateTime: Bool {return self._dateTime != nil}
   /// Clears the value of `dateTime`. Subsequent reads from it will return its default value.
-  mutating func clearDateTime() {_uniqueStorage()._dateTime = nil}
+  mutating func clearDateTime() {self._dateTime = nil}
 
   /// Batch of location points
-  var locations: [Chronotopia_LocationPoint] {
-    get {return _storage._locations}
-    set {_uniqueStorage()._locations = newValue}
-  }
+  var locations: [Chronotopia_LocationPoint] = []
 
   /// Batch of activity events
-  var activities: [Chronotopia_ActivityEvent] {
-    get {return _storage._activities}
-    set {_uniqueStorage()._activities = newValue}
-  }
+  var activities: [Chronotopia_ActivityEvent] = []
 
   /// Batch of visit events
-  var visits: [Chronotopia_VisitEvent] {
-    get {return _storage._visits}
-    set {_uniqueStorage()._visits = newValue}
-  }
-
-  /// Device metadata
-  var deviceMetadata: Chronotopia_DeviceMetadata {
-    get {return _storage._deviceMetadata ?? Chronotopia_DeviceMetadata()}
-    set {_uniqueStorage()._deviceMetadata = newValue}
-  }
-  /// Returns true if `deviceMetadata` has been explicitly set.
-  var hasDeviceMetadata: Bool {return _storage._deviceMetadata != nil}
-  /// Clears the value of `deviceMetadata`. Subsequent reads from it will return its default value.
-  mutating func clearDeviceMetadata() {_uniqueStorage()._deviceMetadata = nil}
+  var visits: [Chronotopia_VisitEvent] = []
 
   var unknownFields = SwiftProtobuf.UnknownStorage()
 
   init() {}
 
-  fileprivate var _storage = _StorageClass.defaultInstance
+  fileprivate var _dateTime: Chronotopia_DateTime? = nil
 }
 
 /// Location point data
@@ -124,7 +105,7 @@ struct Chronotopia_LocationPoint: @unchecked Sendable {
     set {_uniqueStorage()._bearing = newValue}
   }
 
-  /// Timestamps
+  /// Timing
   var dateTime: Chronotopia_DateTime {
     get {return _storage._dateTime ?? Chronotopia_DateTime()}
     set {_uniqueStorage()._dateTime = newValue}
@@ -135,11 +116,6 @@ struct Chronotopia_LocationPoint: @unchecked Sendable {
   mutating func clearDateTime() {_uniqueStorage()._dateTime = nil}
 
   /// Location provider information
-  var provider: String {
-    get {return _storage._provider}
-    set {_uniqueStorage()._provider = newValue}
-  }
-
   var isMockLocation: Bool {
     get {return _storage._isMockLocation}
     set {_uniqueStorage()._isMockLocation = newValue}
@@ -147,20 +123,28 @@ struct Chronotopia_LocationPoint: @unchecked Sendable {
 
   /// For indoor positioning (iOS)
   var floorLevel: Int32 {
-    get {return _storage._floorLevel}
+    get {return _storage._floorLevel ?? 0}
     set {_uniqueStorage()._floorLevel = newValue}
   }
+  /// Returns true if `floorLevel` has been explicitly set.
+  var hasFloorLevel: Bool {return _storage._floorLevel != nil}
+  /// Clears the value of `floorLevel`. Subsequent reads from it will return its default value.
+  mutating func clearFloorLevel() {_uniqueStorage()._floorLevel = nil}
 
   /// Device state information
-  var batteryLevel: Int32 {
+  var batteryLevel: UInt32 {
     get {return _storage._batteryLevel}
     set {_uniqueStorage()._batteryLevel = newValue}
   }
 
   var networkType: String {
-    get {return _storage._networkType}
+    get {return _storage._networkType ?? String()}
     set {_uniqueStorage()._networkType = newValue}
   }
+  /// Returns true if `networkType` has been explicitly set.
+  var hasNetworkType: Bool {return _storage._networkType != nil}
+  /// Clears the value of `networkType`. Subsequent reads from it will return its default value.
+  mutating func clearNetworkType() {_uniqueStorage()._networkType = nil}
 
   var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -170,27 +154,59 @@ struct Chronotopia_LocationPoint: @unchecked Sendable {
 }
 
 /// Activity recognition event
-struct Chronotopia_ActivityEvent: Sendable {
+struct Chronotopia_ActivityEvent: @unchecked Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  var type: Chronotopia_ActivityEvent.ActivityType = .unknown
+  var type: Chronotopia_ActivityEvent.ActivityType {
+    get {return _storage._type}
+    set {_uniqueStorage()._type = newValue}
+  }
 
   /// 0-100
-  var confidence: Int32 = 0
+  var confidence: Int32 {
+    get {return _storage._confidence}
+    set {_uniqueStorage()._confidence = newValue}
+  }
 
   /// Timestamps
-  var timestamp: Int64 = 0
+  var start: Chronotopia_DateTime {
+    get {return _storage._start ?? Chronotopia_DateTime()}
+    set {_uniqueStorage()._start = newValue}
+  }
+  /// Returns true if `start` has been explicitly set.
+  var hasStart: Bool {return _storage._start != nil}
+  /// Clears the value of `start`. Subsequent reads from it will return its default value.
+  mutating func clearStart() {_uniqueStorage()._start = nil}
 
-  var startTime: Int64 = 0
-
-  var endTime: Int64 = 0
+  var end: Chronotopia_DateTime {
+    get {return _storage._end ?? Chronotopia_DateTime()}
+    set {_uniqueStorage()._end = newValue}
+  }
+  /// Returns true if `end` has been explicitly set.
+  var hasEnd: Bool {return _storage._end != nil}
+  /// Clears the value of `end`. Subsequent reads from it will return its default value.
+  mutating func clearEnd() {_uniqueStorage()._end = nil}
 
   /// Movement data
-  var stepCount: Int64 = 0
+  var stepCount: Int64 {
+    get {return _storage._stepCount ?? 0}
+    set {_uniqueStorage()._stepCount = newValue}
+  }
+  /// Returns true if `stepCount` has been explicitly set.
+  var hasStepCount: Bool {return _storage._stepCount != nil}
+  /// Clears the value of `stepCount`. Subsequent reads from it will return its default value.
+  mutating func clearStepCount() {_uniqueStorage()._stepCount = nil}
 
-  var distance: Double = 0
+  var distance: Double {
+    get {return _storage._distance ?? 0}
+    set {_uniqueStorage()._distance = newValue}
+  }
+  /// Returns true if `distance` has been explicitly set.
+  var hasDistance: Bool {return _storage._distance != nil}
+  /// Clears the value of `distance`. Subsequent reads from it will return its default value.
+  mutating func clearDistance() {_uniqueStorage()._distance = nil}
 
   var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -253,27 +269,54 @@ struct Chronotopia_ActivityEvent: Sendable {
   }
 
   init() {}
+
+  fileprivate var _storage = _StorageClass.defaultInstance
 }
 
 /// Visit events (iOS-specific but we'll handle on Android too)
-struct Chronotopia_VisitEvent: Sendable {
+struct Chronotopia_VisitEvent: @unchecked Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  var latitude: Double = 0
+  var latitude: Double {
+    get {return _storage._latitude}
+    set {_uniqueStorage()._latitude = newValue}
+  }
 
-  var longitude: Double = 0
+  var longitude: Double {
+    get {return _storage._longitude}
+    set {_uniqueStorage()._longitude = newValue}
+  }
 
-  var horizontalAccuracy: Double = 0
+  var horizontalAccuracy: Double {
+    get {return _storage._horizontalAccuracy}
+    set {_uniqueStorage()._horizontalAccuracy = newValue}
+  }
 
-  var arrivalTime: Int64 = 0
+  var arrival: Chronotopia_DateTime {
+    get {return _storage._arrival ?? Chronotopia_DateTime()}
+    set {_uniqueStorage()._arrival = newValue}
+  }
+  /// Returns true if `arrival` has been explicitly set.
+  var hasArrival: Bool {return _storage._arrival != nil}
+  /// Clears the value of `arrival`. Subsequent reads from it will return its default value.
+  mutating func clearArrival() {_uniqueStorage()._arrival = nil}
 
-  var departureTime: Int64 = 0
+  var departure: Chronotopia_DateTime {
+    get {return _storage._departure ?? Chronotopia_DateTime()}
+    set {_uniqueStorage()._departure = newValue}
+  }
+  /// Returns true if `departure` has been explicitly set.
+  var hasDeparture: Bool {return _storage._departure != nil}
+  /// Clears the value of `departure`. Subsequent reads from it will return its default value.
+  mutating func clearDeparture() {_uniqueStorage()._departure = nil}
 
   var unknownFields = SwiftProtobuf.UnknownStorage()
 
   init() {}
+
+  fileprivate var _storage = _StorageClass.defaultInstance
 }
 
 /// Device metadata
@@ -330,102 +373,48 @@ extension Chronotopia_IngestBatch: SwiftProtobuf.Message, SwiftProtobuf._Message
     4: .same(proto: "locations"),
     5: .same(proto: "activities"),
     6: .same(proto: "visits"),
-    7: .standard(proto: "device_metadata"),
   ]
 
-  fileprivate class _StorageClass {
-    var _dateTime: Chronotopia_DateTime? = nil
-    var _locations: [Chronotopia_LocationPoint] = []
-    var _activities: [Chronotopia_ActivityEvent] = []
-    var _visits: [Chronotopia_VisitEvent] = []
-    var _deviceMetadata: Chronotopia_DeviceMetadata? = nil
-
-    #if swift(>=5.10)
-      // This property is used as the initial default value for new instances of the type.
-      // The type itself is protecting the reference to its storage via CoW semantics.
-      // This will force a copy to be made of this reference when the first mutation occurs;
-      // hence, it is safe to mark this as `nonisolated(unsafe)`.
-      static nonisolated(unsafe) let defaultInstance = _StorageClass()
-    #else
-      static let defaultInstance = _StorageClass()
-    #endif
-
-    private init() {}
-
-    init(copying source: _StorageClass) {
-      _dateTime = source._dateTime
-      _locations = source._locations
-      _activities = source._activities
-      _visits = source._visits
-      _deviceMetadata = source._deviceMetadata
-    }
-  }
-
-  fileprivate mutating func _uniqueStorage() -> _StorageClass {
-    if !isKnownUniquelyReferenced(&_storage) {
-      _storage = _StorageClass(copying: _storage)
-    }
-    return _storage
-  }
-
   mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    _ = _uniqueStorage()
-    try withExtendedLifetime(_storage) { (_storage: _StorageClass) in
-      while let fieldNumber = try decoder.nextFieldNumber() {
-        // The use of inline closures is to circumvent an issue where the compiler
-        // allocates stack space for every case branch when no optimizations are
-        // enabled. https://github.com/apple/swift-protobuf/issues/1034
-        switch fieldNumber {
-        case 3: try { try decoder.decodeSingularMessageField(value: &_storage._dateTime) }()
-        case 4: try { try decoder.decodeRepeatedMessageField(value: &_storage._locations) }()
-        case 5: try { try decoder.decodeRepeatedMessageField(value: &_storage._activities) }()
-        case 6: try { try decoder.decodeRepeatedMessageField(value: &_storage._visits) }()
-        case 7: try { try decoder.decodeSingularMessageField(value: &_storage._deviceMetadata) }()
-        default: break
-        }
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 3: try { try decoder.decodeSingularMessageField(value: &self._dateTime) }()
+      case 4: try { try decoder.decodeRepeatedMessageField(value: &self.locations) }()
+      case 5: try { try decoder.decodeRepeatedMessageField(value: &self.activities) }()
+      case 6: try { try decoder.decodeRepeatedMessageField(value: &self.visits) }()
+      default: break
       }
     }
   }
 
   func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    try withExtendedLifetime(_storage) { (_storage: _StorageClass) in
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every if/case branch local when no optimizations
-      // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
-      // https://github.com/apple/swift-protobuf/issues/1182
-      try { if let v = _storage._dateTime {
-        try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
-      } }()
-      if !_storage._locations.isEmpty {
-        try visitor.visitRepeatedMessageField(value: _storage._locations, fieldNumber: 4)
-      }
-      if !_storage._activities.isEmpty {
-        try visitor.visitRepeatedMessageField(value: _storage._activities, fieldNumber: 5)
-      }
-      if !_storage._visits.isEmpty {
-        try visitor.visitRepeatedMessageField(value: _storage._visits, fieldNumber: 6)
-      }
-      try { if let v = _storage._deviceMetadata {
-        try visitor.visitSingularMessageField(value: v, fieldNumber: 7)
-      } }()
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    try { if let v = self._dateTime {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
+    } }()
+    if !self.locations.isEmpty {
+      try visitor.visitRepeatedMessageField(value: self.locations, fieldNumber: 4)
+    }
+    if !self.activities.isEmpty {
+      try visitor.visitRepeatedMessageField(value: self.activities, fieldNumber: 5)
+    }
+    if !self.visits.isEmpty {
+      try visitor.visitRepeatedMessageField(value: self.visits, fieldNumber: 6)
     }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   static func ==(lhs: Chronotopia_IngestBatch, rhs: Chronotopia_IngestBatch) -> Bool {
-    if lhs._storage !== rhs._storage {
-      let storagesAreEqual: Bool = withExtendedLifetime((lhs._storage, rhs._storage)) { (_args: (_StorageClass, _StorageClass)) in
-        let _storage = _args.0
-        let rhs_storage = _args.1
-        if _storage._dateTime != rhs_storage._dateTime {return false}
-        if _storage._locations != rhs_storage._locations {return false}
-        if _storage._activities != rhs_storage._activities {return false}
-        if _storage._visits != rhs_storage._visits {return false}
-        if _storage._deviceMetadata != rhs_storage._deviceMetadata {return false}
-        return true
-      }
-      if !storagesAreEqual {return false}
-    }
+    if lhs._dateTime != rhs._dateTime {return false}
+    if lhs.locations != rhs.locations {return false}
+    if lhs.activities != rhs.activities {return false}
+    if lhs.visits != rhs.visits {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -444,11 +433,10 @@ extension Chronotopia_LocationPoint: SwiftProtobuf.Message, SwiftProtobuf._Messa
     8: .same(proto: "speed"),
     9: .same(proto: "bearing"),
     10: .same(proto: "dateTime"),
-    11: .same(proto: "provider"),
-    12: .standard(proto: "is_mock_location"),
-    13: .standard(proto: "floor_level"),
-    14: .standard(proto: "battery_level"),
-    15: .standard(proto: "network_type"),
+    11: .standard(proto: "is_mock_location"),
+    12: .standard(proto: "floor_level"),
+    13: .standard(proto: "battery_level"),
+    14: .standard(proto: "network_type"),
   ]
 
   fileprivate class _StorageClass {
@@ -462,11 +450,10 @@ extension Chronotopia_LocationPoint: SwiftProtobuf.Message, SwiftProtobuf._Messa
     var _speed: Double = 0
     var _bearing: Double = 0
     var _dateTime: Chronotopia_DateTime? = nil
-    var _provider: String = String()
     var _isMockLocation: Bool = false
-    var _floorLevel: Int32 = 0
-    var _batteryLevel: Int32 = 0
-    var _networkType: String = String()
+    var _floorLevel: Int32? = nil
+    var _batteryLevel: UInt32 = 0
+    var _networkType: String? = nil
 
     #if swift(>=5.10)
       // This property is used as the initial default value for new instances of the type.
@@ -491,7 +478,6 @@ extension Chronotopia_LocationPoint: SwiftProtobuf.Message, SwiftProtobuf._Messa
       _speed = source._speed
       _bearing = source._bearing
       _dateTime = source._dateTime
-      _provider = source._provider
       _isMockLocation = source._isMockLocation
       _floorLevel = source._floorLevel
       _batteryLevel = source._batteryLevel
@@ -524,11 +510,10 @@ extension Chronotopia_LocationPoint: SwiftProtobuf.Message, SwiftProtobuf._Messa
         case 8: try { try decoder.decodeSingularDoubleField(value: &_storage._speed) }()
         case 9: try { try decoder.decodeSingularDoubleField(value: &_storage._bearing) }()
         case 10: try { try decoder.decodeSingularMessageField(value: &_storage._dateTime) }()
-        case 11: try { try decoder.decodeSingularStringField(value: &_storage._provider) }()
-        case 12: try { try decoder.decodeSingularBoolField(value: &_storage._isMockLocation) }()
-        case 13: try { try decoder.decodeSingularInt32Field(value: &_storage._floorLevel) }()
-        case 14: try { try decoder.decodeSingularInt32Field(value: &_storage._batteryLevel) }()
-        case 15: try { try decoder.decodeSingularStringField(value: &_storage._networkType) }()
+        case 11: try { try decoder.decodeSingularBoolField(value: &_storage._isMockLocation) }()
+        case 12: try { try decoder.decodeSingularInt32Field(value: &_storage._floorLevel) }()
+        case 13: try { try decoder.decodeSingularUInt32Field(value: &_storage._batteryLevel) }()
+        case 14: try { try decoder.decodeSingularStringField(value: &_storage._networkType) }()
         default: break
         }
       }
@@ -571,21 +556,18 @@ extension Chronotopia_LocationPoint: SwiftProtobuf.Message, SwiftProtobuf._Messa
       try { if let v = _storage._dateTime {
         try visitor.visitSingularMessageField(value: v, fieldNumber: 10)
       } }()
-      if !_storage._provider.isEmpty {
-        try visitor.visitSingularStringField(value: _storage._provider, fieldNumber: 11)
-      }
       if _storage._isMockLocation != false {
-        try visitor.visitSingularBoolField(value: _storage._isMockLocation, fieldNumber: 12)
+        try visitor.visitSingularBoolField(value: _storage._isMockLocation, fieldNumber: 11)
       }
-      if _storage._floorLevel != 0 {
-        try visitor.visitSingularInt32Field(value: _storage._floorLevel, fieldNumber: 13)
-      }
+      try { if let v = _storage._floorLevel {
+        try visitor.visitSingularInt32Field(value: v, fieldNumber: 12)
+      } }()
       if _storage._batteryLevel != 0 {
-        try visitor.visitSingularInt32Field(value: _storage._batteryLevel, fieldNumber: 14)
+        try visitor.visitSingularUInt32Field(value: _storage._batteryLevel, fieldNumber: 13)
       }
-      if !_storage._networkType.isEmpty {
-        try visitor.visitSingularStringField(value: _storage._networkType, fieldNumber: 15)
-      }
+      try { if let v = _storage._networkType {
+        try visitor.visitSingularStringField(value: v, fieldNumber: 14)
+      } }()
     }
     try unknownFields.traverse(visitor: &visitor)
   }
@@ -605,7 +587,6 @@ extension Chronotopia_LocationPoint: SwiftProtobuf.Message, SwiftProtobuf._Messa
         if _storage._speed != rhs_storage._speed {return false}
         if _storage._bearing != rhs_storage._bearing {return false}
         if _storage._dateTime != rhs_storage._dateTime {return false}
-        if _storage._provider != rhs_storage._provider {return false}
         if _storage._isMockLocation != rhs_storage._isMockLocation {return false}
         if _storage._floorLevel != rhs_storage._floorLevel {return false}
         if _storage._batteryLevel != rhs_storage._batteryLevel {return false}
@@ -624,64 +605,112 @@ extension Chronotopia_ActivityEvent: SwiftProtobuf.Message, SwiftProtobuf._Messa
   static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
     1: .same(proto: "type"),
     2: .same(proto: "confidence"),
-    3: .same(proto: "timestamp"),
-    4: .standard(proto: "start_time"),
-    5: .standard(proto: "end_time"),
-    6: .standard(proto: "step_count"),
-    7: .same(proto: "distance"),
+    3: .same(proto: "start"),
+    4: .same(proto: "end"),
+    5: .standard(proto: "step_count"),
+    6: .same(proto: "distance"),
   ]
 
+  fileprivate class _StorageClass {
+    var _type: Chronotopia_ActivityEvent.ActivityType = .unknown
+    var _confidence: Int32 = 0
+    var _start: Chronotopia_DateTime? = nil
+    var _end: Chronotopia_DateTime? = nil
+    var _stepCount: Int64? = nil
+    var _distance: Double? = nil
+
+    #if swift(>=5.10)
+      // This property is used as the initial default value for new instances of the type.
+      // The type itself is protecting the reference to its storage via CoW semantics.
+      // This will force a copy to be made of this reference when the first mutation occurs;
+      // hence, it is safe to mark this as `nonisolated(unsafe)`.
+      static nonisolated(unsafe) let defaultInstance = _StorageClass()
+    #else
+      static let defaultInstance = _StorageClass()
+    #endif
+
+    private init() {}
+
+    init(copying source: _StorageClass) {
+      _type = source._type
+      _confidence = source._confidence
+      _start = source._start
+      _end = source._end
+      _stepCount = source._stepCount
+      _distance = source._distance
+    }
+  }
+
+  fileprivate mutating func _uniqueStorage() -> _StorageClass {
+    if !isKnownUniquelyReferenced(&_storage) {
+      _storage = _StorageClass(copying: _storage)
+    }
+    return _storage
+  }
+
   mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try { try decoder.decodeSingularEnumField(value: &self.type) }()
-      case 2: try { try decoder.decodeSingularInt32Field(value: &self.confidence) }()
-      case 3: try { try decoder.decodeSingularInt64Field(value: &self.timestamp) }()
-      case 4: try { try decoder.decodeSingularInt64Field(value: &self.startTime) }()
-      case 5: try { try decoder.decodeSingularInt64Field(value: &self.endTime) }()
-      case 6: try { try decoder.decodeSingularInt64Field(value: &self.stepCount) }()
-      case 7: try { try decoder.decodeSingularDoubleField(value: &self.distance) }()
-      default: break
+    _ = _uniqueStorage()
+    try withExtendedLifetime(_storage) { (_storage: _StorageClass) in
+      while let fieldNumber = try decoder.nextFieldNumber() {
+        // The use of inline closures is to circumvent an issue where the compiler
+        // allocates stack space for every case branch when no optimizations are
+        // enabled. https://github.com/apple/swift-protobuf/issues/1034
+        switch fieldNumber {
+        case 1: try { try decoder.decodeSingularEnumField(value: &_storage._type) }()
+        case 2: try { try decoder.decodeSingularInt32Field(value: &_storage._confidence) }()
+        case 3: try { try decoder.decodeSingularMessageField(value: &_storage._start) }()
+        case 4: try { try decoder.decodeSingularMessageField(value: &_storage._end) }()
+        case 5: try { try decoder.decodeSingularInt64Field(value: &_storage._stepCount) }()
+        case 6: try { try decoder.decodeSingularDoubleField(value: &_storage._distance) }()
+        default: break
+        }
       }
     }
   }
 
   func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if self.type != .unknown {
-      try visitor.visitSingularEnumField(value: self.type, fieldNumber: 1)
-    }
-    if self.confidence != 0 {
-      try visitor.visitSingularInt32Field(value: self.confidence, fieldNumber: 2)
-    }
-    if self.timestamp != 0 {
-      try visitor.visitSingularInt64Field(value: self.timestamp, fieldNumber: 3)
-    }
-    if self.startTime != 0 {
-      try visitor.visitSingularInt64Field(value: self.startTime, fieldNumber: 4)
-    }
-    if self.endTime != 0 {
-      try visitor.visitSingularInt64Field(value: self.endTime, fieldNumber: 5)
-    }
-    if self.stepCount != 0 {
-      try visitor.visitSingularInt64Field(value: self.stepCount, fieldNumber: 6)
-    }
-    if self.distance.bitPattern != 0 {
-      try visitor.visitSingularDoubleField(value: self.distance, fieldNumber: 7)
+    try withExtendedLifetime(_storage) { (_storage: _StorageClass) in
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every if/case branch local when no optimizations
+      // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+      // https://github.com/apple/swift-protobuf/issues/1182
+      if _storage._type != .unknown {
+        try visitor.visitSingularEnumField(value: _storage._type, fieldNumber: 1)
+      }
+      if _storage._confidence != 0 {
+        try visitor.visitSingularInt32Field(value: _storage._confidence, fieldNumber: 2)
+      }
+      try { if let v = _storage._start {
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
+      } }()
+      try { if let v = _storage._end {
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 4)
+      } }()
+      try { if let v = _storage._stepCount {
+        try visitor.visitSingularInt64Field(value: v, fieldNumber: 5)
+      } }()
+      try { if let v = _storage._distance {
+        try visitor.visitSingularDoubleField(value: v, fieldNumber: 6)
+      } }()
     }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   static func ==(lhs: Chronotopia_ActivityEvent, rhs: Chronotopia_ActivityEvent) -> Bool {
-    if lhs.type != rhs.type {return false}
-    if lhs.confidence != rhs.confidence {return false}
-    if lhs.timestamp != rhs.timestamp {return false}
-    if lhs.startTime != rhs.startTime {return false}
-    if lhs.endTime != rhs.endTime {return false}
-    if lhs.stepCount != rhs.stepCount {return false}
-    if lhs.distance != rhs.distance {return false}
+    if lhs._storage !== rhs._storage {
+      let storagesAreEqual: Bool = withExtendedLifetime((lhs._storage, rhs._storage)) { (_args: (_StorageClass, _StorageClass)) in
+        let _storage = _args.0
+        let rhs_storage = _args.1
+        if _storage._type != rhs_storage._type {return false}
+        if _storage._confidence != rhs_storage._confidence {return false}
+        if _storage._start != rhs_storage._start {return false}
+        if _storage._end != rhs_storage._end {return false}
+        if _storage._stepCount != rhs_storage._stepCount {return false}
+        if _storage._distance != rhs_storage._distance {return false}
+        return true
+      }
+      if !storagesAreEqual {return false}
+    }
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -706,51 +735,103 @@ extension Chronotopia_VisitEvent: SwiftProtobuf.Message, SwiftProtobuf._MessageI
     1: .same(proto: "latitude"),
     2: .same(proto: "longitude"),
     3: .standard(proto: "horizontal_accuracy"),
-    4: .standard(proto: "arrival_time"),
-    5: .standard(proto: "departure_time"),
+    4: .same(proto: "arrival"),
+    5: .same(proto: "departure"),
   ]
 
+  fileprivate class _StorageClass {
+    var _latitude: Double = 0
+    var _longitude: Double = 0
+    var _horizontalAccuracy: Double = 0
+    var _arrival: Chronotopia_DateTime? = nil
+    var _departure: Chronotopia_DateTime? = nil
+
+    #if swift(>=5.10)
+      // This property is used as the initial default value for new instances of the type.
+      // The type itself is protecting the reference to its storage via CoW semantics.
+      // This will force a copy to be made of this reference when the first mutation occurs;
+      // hence, it is safe to mark this as `nonisolated(unsafe)`.
+      static nonisolated(unsafe) let defaultInstance = _StorageClass()
+    #else
+      static let defaultInstance = _StorageClass()
+    #endif
+
+    private init() {}
+
+    init(copying source: _StorageClass) {
+      _latitude = source._latitude
+      _longitude = source._longitude
+      _horizontalAccuracy = source._horizontalAccuracy
+      _arrival = source._arrival
+      _departure = source._departure
+    }
+  }
+
+  fileprivate mutating func _uniqueStorage() -> _StorageClass {
+    if !isKnownUniquelyReferenced(&_storage) {
+      _storage = _StorageClass(copying: _storage)
+    }
+    return _storage
+  }
+
   mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try { try decoder.decodeSingularDoubleField(value: &self.latitude) }()
-      case 2: try { try decoder.decodeSingularDoubleField(value: &self.longitude) }()
-      case 3: try { try decoder.decodeSingularDoubleField(value: &self.horizontalAccuracy) }()
-      case 4: try { try decoder.decodeSingularInt64Field(value: &self.arrivalTime) }()
-      case 5: try { try decoder.decodeSingularInt64Field(value: &self.departureTime) }()
-      default: break
+    _ = _uniqueStorage()
+    try withExtendedLifetime(_storage) { (_storage: _StorageClass) in
+      while let fieldNumber = try decoder.nextFieldNumber() {
+        // The use of inline closures is to circumvent an issue where the compiler
+        // allocates stack space for every case branch when no optimizations are
+        // enabled. https://github.com/apple/swift-protobuf/issues/1034
+        switch fieldNumber {
+        case 1: try { try decoder.decodeSingularDoubleField(value: &_storage._latitude) }()
+        case 2: try { try decoder.decodeSingularDoubleField(value: &_storage._longitude) }()
+        case 3: try { try decoder.decodeSingularDoubleField(value: &_storage._horizontalAccuracy) }()
+        case 4: try { try decoder.decodeSingularMessageField(value: &_storage._arrival) }()
+        case 5: try { try decoder.decodeSingularMessageField(value: &_storage._departure) }()
+        default: break
+        }
       }
     }
   }
 
   func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if self.latitude.bitPattern != 0 {
-      try visitor.visitSingularDoubleField(value: self.latitude, fieldNumber: 1)
-    }
-    if self.longitude.bitPattern != 0 {
-      try visitor.visitSingularDoubleField(value: self.longitude, fieldNumber: 2)
-    }
-    if self.horizontalAccuracy.bitPattern != 0 {
-      try visitor.visitSingularDoubleField(value: self.horizontalAccuracy, fieldNumber: 3)
-    }
-    if self.arrivalTime != 0 {
-      try visitor.visitSingularInt64Field(value: self.arrivalTime, fieldNumber: 4)
-    }
-    if self.departureTime != 0 {
-      try visitor.visitSingularInt64Field(value: self.departureTime, fieldNumber: 5)
+    try withExtendedLifetime(_storage) { (_storage: _StorageClass) in
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every if/case branch local when no optimizations
+      // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+      // https://github.com/apple/swift-protobuf/issues/1182
+      if _storage._latitude.bitPattern != 0 {
+        try visitor.visitSingularDoubleField(value: _storage._latitude, fieldNumber: 1)
+      }
+      if _storage._longitude.bitPattern != 0 {
+        try visitor.visitSingularDoubleField(value: _storage._longitude, fieldNumber: 2)
+      }
+      if _storage._horizontalAccuracy.bitPattern != 0 {
+        try visitor.visitSingularDoubleField(value: _storage._horizontalAccuracy, fieldNumber: 3)
+      }
+      try { if let v = _storage._arrival {
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 4)
+      } }()
+      try { if let v = _storage._departure {
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 5)
+      } }()
     }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   static func ==(lhs: Chronotopia_VisitEvent, rhs: Chronotopia_VisitEvent) -> Bool {
-    if lhs.latitude != rhs.latitude {return false}
-    if lhs.longitude != rhs.longitude {return false}
-    if lhs.horizontalAccuracy != rhs.horizontalAccuracy {return false}
-    if lhs.arrivalTime != rhs.arrivalTime {return false}
-    if lhs.departureTime != rhs.departureTime {return false}
+    if lhs._storage !== rhs._storage {
+      let storagesAreEqual: Bool = withExtendedLifetime((lhs._storage, rhs._storage)) { (_args: (_StorageClass, _StorageClass)) in
+        let _storage = _args.0
+        let rhs_storage = _args.1
+        if _storage._latitude != rhs_storage._latitude {return false}
+        if _storage._longitude != rhs_storage._longitude {return false}
+        if _storage._horizontalAccuracy != rhs_storage._horizontalAccuracy {return false}
+        if _storage._arrival != rhs_storage._arrival {return false}
+        if _storage._departure != rhs_storage._departure {return false}
+        return true
+      }
+      if !storagesAreEqual {return false}
+    }
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

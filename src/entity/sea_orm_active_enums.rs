@@ -3,6 +3,28 @@
 use sea_orm::entity::prelude::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "activity_type")]
+pub enum ActivityType {
+    #[sea_orm(string_value = "activity_type")]
+    ActivityType,
+    #[sea_orm(string_value = "unknown")]
+    Unknown,
+    #[sea_orm(string_value = "still")]
+    Still,
+    #[sea_orm(string_value = "walking")]
+    Walking,
+    #[sea_orm(string_value = "running")]
+    Running,
+    #[sea_orm(string_value = "in_vehicle")]
+    InVehicle,
+    #[sea_orm(string_value = "on_bicycle")]
+    OnBicycle,
+    #[sea_orm(string_value = "on_foot")]
+    OnFoot,
+    #[sea_orm(string_value = "tilting")]
+    Tilting,
+}
+#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
 #[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "user_status")]
 pub enum UserStatus {
     #[sea_orm(string_value = "user_status")]

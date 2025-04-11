@@ -1,4 +1,3 @@
-import BackgroundTasks
 import CoreLocation
 import Flutter
 // iOS Method Channel Implementation
@@ -9,10 +8,12 @@ import UserNotifications
 class MethodChannelHandler: NSObject {
     private var locationManager: LocationManager?
     private var motionActivity: MotionActivity?
+    private var grpcClient: GrpcClient?
 
     init(locationManager: LocationManager? = nil, motionActivity: MotionActivity? = nil) {
         self.locationManager = locationManager
         self.motionActivity = motionActivity
+        self.grpcClient = GrpcClient.shared
     }
 
     // Service Methods
@@ -31,6 +32,35 @@ class MethodChannelHandler: NSObject {
         case "isServiceRunning":
             let isRunning = isServiceRunning()
             result(isRunning)
+        case "getUploadStatus":
+            let status = getUploadStatus()
+            result(status)
+        case "setAuthToken":
+            if let args = call.arguments as? [String: Any],
+                let token = args["token"] as? String
+            {
+                setAuthToken(token)
+                result(true)
+            } else {
+                result(
+                    FlutterError(
+                        code: "INVALID_ARGS", message: "Missing or invalid token", details: nil)
+                )
+            }
+        case "setServerSettings":
+            if let args = call.arguments as? [String: Any],
+                let serverUrl = args["serverUrl"] as? String,
+                let useTLS = args["useTLS"] as? Bool
+            {
+                setServerSettings(serverUrl: serverUrl, useTLS: useTLS)
+                result(true)
+            } else {
+                result(
+                    FlutterError(
+                        code: "INVALID_ARGS", message: "Missing or invalid server settings",
+                        details: nil)
+                )
+            }
         case "setLowPowerMode":
             if let args = call.arguments as? [String: Any],
                 let enabled = args["enabled"] as? Bool
@@ -51,13 +81,18 @@ class MethodChannelHandler: NSObject {
                 let syncOnWifiOnly = args["syncOnWifiOnly"] as? Bool,
                 let serverUrl = args["serverUrl"] as? String
             {
+                // Get auth token and TLS setting if provided
+                let authToken = args["authToken"] as? String
+                let useTLS = args["useTLS"] as? Bool ?? true
 
                 applySettings(
                     trackInLowBattery: trackInLowBattery,
                     locationAccuracy: locationAccuracy,
                     uploadFrequency: uploadFrequency,
                     syncOnWifiOnly: syncOnWifiOnly,
-                    serverUrl: serverUrl
+                    serverUrl: serverUrl,
+                    useTLS: useTLS,
+                    authToken: authToken
                 )
                 result(true)
             } else {
@@ -68,6 +103,9 @@ class MethodChannelHandler: NSObject {
             }
         case "requestSingleLocationUpdate":
             requestSingleLocationUpdate()
+            result(true)
+        case "forceSyncNow":
+            forceSyncNow()
             result(true)
         default:
             result(FlutterMethodNotImplemented)
@@ -120,9 +158,6 @@ class MethodChannelHandler: NSObject {
         locationManager?.startLocationUpdates()
         motionActivity?.startActivityTracking()
 
-        // Schedule background tasks
-        scheduleBackgroundTasks()
-
         // Set up local notifications for service restarts
         setupNotifications()
     }
@@ -142,6 +177,19 @@ class MethodChannelHandler: NSObject {
         return locationManager?.locationUpdatesActive ?? false
     }
 
+    private func getUploadStatus() -> [String: Any] {
+        // Get status from gRPC client
+        if let status = grpcClient?.getUploadStatus() {
+            return status
+        }
+        return ["error": "Unable to get upload status"]
+    }
+
+    private func forceSyncNow() {
+        // Force an immediate sync
+        grpcClient?.scheduleSyncData()
+    }
+
     private func setLowPowerMode(enabled: Bool) {
         // Adjust location accuracy based on low power mode
         let accuracy: CLLocationAccuracy =
@@ -153,12 +201,35 @@ class MethodChannelHandler: NSObject {
         locationManager?.setDistanceFilter(interval)
     }
 
+    private func setAuthToken(_ token: String) {
+        // Set the token in the gRPC client
+        GrpcClient.shared.setAuthToken(token)
+
+        // Store in user defaults for persistence
+        let defaults = UserDefaults.standard
+        defaults.set(token, forKey: "auth_token")
+        defaults.synchronize()
+    }
+
+    private func setServerSettings(serverUrl: String, useTLS: Bool) {
+        // Store in user defaults for persistence
+        let defaults = UserDefaults.standard
+        defaults.set(serverUrl, forKey: "server_url")
+        defaults.set(useTLS, forKey: "use_tls")
+        defaults.synchronize()
+
+        // Update the server settings in the GrpcClient
+        GrpcClient.shared.setServerSettings(serverUrl: serverUrl, useTLS: useTLS)
+    }
+
     private func applySettings(
         trackInLowBattery: Bool,
         locationAccuracy: Int,
         uploadFrequency: Int,
         syncOnWifiOnly: Bool,
-        serverUrl: String
+        serverUrl: String,
+        useTLS: Bool = true,
+        authToken: String? = nil
     ) {
         // Apply location accuracy based on setting
         var accuracy: CLLocationAccuracy
@@ -195,6 +266,16 @@ class MethodChannelHandler: NSObject {
         defaults.set(uploadFrequency, forKey: "upload_frequency")
         defaults.set(syncOnWifiOnly, forKey: "sync_on_wifi_only")
         defaults.set(serverUrl, forKey: "server_url")
+        defaults.set(useTLS, forKey: "use_tls")
+
+        // Update server settings
+        setServerSettings(serverUrl: serverUrl, useTLS: useTLS)
+
+        // Update auth token if provided
+        if let authToken = authToken {
+            setAuthToken(authToken)
+        }
+
         defaults.synchronize()
     }
 
@@ -227,124 +308,7 @@ class MethodChannelHandler: NSObject {
         }
     }
 
-    // Background Task Management
-
-    private func scheduleBackgroundTasks() {
-        guard #available(iOS 13.0, *) else { return }
-
-        // Register background processing task for periodic data sync
-        let dataSyncTaskIdentifier = "com.example.trip_tracker.data_sync"
-        BGTaskScheduler.shared.register(forTaskWithIdentifier: dataSyncTaskIdentifier, using: nil) {
-            task in
-            self.handleDataSyncTask(task as! BGProcessingTask)
-        }
-
-        // Register background refresh task for location updates
-        let locationUpdateTaskIdentifier = "com.example.trip_tracker.location_update"
-        BGTaskScheduler.shared.register(
-            forTaskWithIdentifier: locationUpdateTaskIdentifier, using: nil
-        ) { task in
-            self.handleLocationUpdateTask(task as! BGAppRefreshTask)
-        }
-
-        // Schedule the tasks
-        scheduleDataSyncTask()
-        scheduleLocationUpdateTask()
-    }
-
-    @available(iOS 13.0, *)
-    private func scheduleDataSyncTask() {
-        let request = BGProcessingTaskRequest(identifier: "com.example.trip_tracker.data_sync")
-        request.requiresNetworkConnectivity = true
-        request.requiresExternalPower = false
-
-        // Get the sync frequency from UserDefaults
-        let defaults = UserDefaults.standard
-        let uploadFrequency = defaults.integer(forKey: "upload_frequency")
-
-        // Convert to actual time interval
-        var earliestBeginDate: TimeInterval
-        switch uploadFrequency {
-        case 0:  // Low
-            earliestBeginDate = 7200  // 2 hours
-        case 1:  // Balanced
-            earliestBeginDate = 1800  // 30 minutes
-        case 2:  // High
-            earliestBeginDate = 900  // 15 minutes
-        default:
-            earliestBeginDate = 1800
-        }
-
-        request.earliestBeginDate = Date(timeIntervalSinceNow: earliestBeginDate)
-
-        do {
-            try BGTaskScheduler.shared.submit(request)
-        } catch {
-            print("Could not schedule data sync task: \(error)")
-        }
-    }
-
-    @available(iOS 13.0, *)
-    private func scheduleLocationUpdateTask() {
-        let request = BGAppRefreshTaskRequest(
-            identifier: "com.example.trip_tracker.location_update")
-
-        // Schedule for 15 minutes from now
-        request.earliestBeginDate = Date(timeIntervalSinceNow: 900)
-
-        do {
-            try BGTaskScheduler.shared.submit(request)
-        } catch {
-            print("Could not schedule location update task: \(error)")
-        }
-    }
-
-    @available(iOS 13.0, *)
-    private func handleDataSyncTask(_ task: BGProcessingTask) {
-        // Schedule the next sync task first
-        scheduleDataSyncTask()
-
-        // Create a task expiration handler
-        task.expirationHandler = {
-            // Clean up any pending work if the task is about to expire
-        }
-
-        // Perform the data sync
-        // This would typically call your data sync service
-        DispatchQueue.global(qos: .utility).async {
-            // Simulate data sync
-            Thread.sleep(forTimeInterval: 5)  // Simulate some work
-
-            // Mark the task as complete
-            task.setTaskCompleted(success: true)
-        }
-    }
-
-    @available(iOS 13.0, *)
-    private func handleLocationUpdateTask(_ task: BGAppRefreshTask) {
-        // Schedule the next location update task first
-        scheduleLocationUpdateTask()
-
-        // Create a task expiration handler
-        task.expirationHandler = {
-            // Clean up any pending work if the task is about to expire
-        }
-
-        // Request a single location update
-        self.requestSingleLocationUpdate()
-
-        // Wait for location update completion or timeout
-        DispatchQueue.global(qos: .utility).async {
-            // Give it a short time to get location
-            Thread.sleep(forTimeInterval: 10)
-
-            // Mark the task as complete
-            task.setTaskCompleted(success: true)
-        }
-    }
-
     // Notification Setup
-
     private func setupNotifications() {
         let center = UNUserNotificationCenter.current()
         center.requestAuthorization(options: [.alert, .sound]) { granted, error in
@@ -355,49 +319,20 @@ class MethodChannelHandler: NSObject {
 
         // Create a "tracking restarted" notification
         let content = UNMutableNotificationContent()
-        content.title = "Tracking Restarted"
-        content.body = "Trip Tracker has restarted location tracking"
+        content.title = "Tracking Active"
+        content.body = "Chronotopia is tracking your location"
         content.sound = UNNotificationSound.default
 
-        // Create a time-based trigger that repeats daily
-        // This acts as a backup to ensure tracking is active
-        let triggerDaily = UNCalendarNotificationTrigger(
-            dateMatching: Calendar.current.dateComponents(
-                [.hour, .minute], from: Date(timeIntervalSinceNow: 86400)),
-            repeats: true
-        )
-
         let request = UNNotificationRequest(
-            identifier: "com.example.trip_tracker.tracking_restart",
+            identifier: "io.chronotopia.app.tracking_active",
             content: content,
-            trigger: triggerDaily
+            trigger: nil  // No trigger means it shows immediately
         )
 
         center.add(request) { error in
             if let error = error {
-                print("Error scheduling notification: \(error)")
+                print("Error showing notification: \(error)")
             }
-        }
-    }
-}
-
-// Extension for BGTasks on iOS 13+
-@available(iOS 13.0, *)
-extension MethodChannelHandler {
-    private func handleBackgroundTask(_ task: BGTask) {
-        // Check if tracking is enabled
-        let defaults = UserDefaults.standard
-        let isTrackingEnabled = defaults.bool(forKey: "tracking_enabled")
-
-        if !isTrackingEnabled {
-            task.setTaskCompleted(success: true)
-            return
-        }
-
-        if task is BGProcessingTask {
-            handleDataSyncTask(task as! BGProcessingTask)
-        } else if task is BGAppRefreshTask {
-            handleLocationUpdateTask(task as! BGAppRefreshTask)
         }
     }
 }

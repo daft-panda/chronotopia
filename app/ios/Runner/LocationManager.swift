@@ -54,7 +54,7 @@ import UIKit
         }
     }
 
-    private func initializeLocationManager() {
+    public func initializeLocationManager() {
         locationManager = CLLocationManager()
         locationManager?.delegate = self
 

@@ -10,15 +10,18 @@ import UIKit
 
 class GrpcClient {
     // Server connection settings
-    private let serverHost: String
-    private let serverPort = 443
-    private let useSSL = true
+    private var serverHost: String
+    private var serverPort = 10000
+    private var useSSL = true
 
-    // gRPC client
-    private var client: GRPCClient<HTTP2ClientTransport.Posix>?
+    // Authorization token
+    private var authToken: String?
 
-    // Trip Tracker client
-    private var tripTrackerClient: Chronotopia_Ingest.Client<HTTP2ClientTransport.Posix>?
+    // Status tracking
+    private var lastSuccessfulUploadTime: Date?
+    private var lastUploadError: String?
+    private var uploadAttemptCount: Int = 0
+    private var uploadSuccessCount: Int = 0
 
     // User and device info
     private var userId: String?
@@ -50,7 +53,24 @@ class GrpcClient {
 
     private init() {
         let defaults = UserDefaults.standard
-        serverHost = defaults.string(forKey: "server_url") ?? "ingest.chronotopia.io"
+        serverHost =
+            defaults.string(forKey: "server_url") ?? "ingest.chronotopia.io"
+        useSSL = defaults.bool(forKey: "use_tls")
+
+        // Load authorization token if available
+        authToken = defaults.string(forKey: "auth_token")
+
+        // Load previous status if available
+        if let lastUploadTimeInterval = defaults.object(
+            forKey: "last_upload_time") as? TimeInterval
+        {
+            lastSuccessfulUploadTime = Date(
+                timeIntervalSince1970: lastUploadTimeInterval)
+        }
+        lastUploadError = defaults.string(forKey: "last_upload_error")
+        uploadAttemptCount = defaults.integer(forKey: "upload_attempt_count")
+        uploadSuccessCount = defaults.integer(forKey: "upload_success_count")
+
         // Create cache directories
         let fileManager = FileManager.default
         let documentDirectory = fileManager.urls(
@@ -78,6 +98,41 @@ class GrpcClient {
         setupNetworkMonitoring()
     }
 
+    // Get status for Flutter UI
+    func getUploadStatus() -> [String: Any] {
+        var status: [String: Any] = [
+            "hasNetworkConnection": hasNetworkConnection,
+            "uploadAttemptCount": uploadAttemptCount,
+            "uploadSuccessCount": uploadSuccessCount,
+            "isSyncing": isSyncing,
+        ]
+
+        if let lastSuccessfulUploadTime = lastSuccessfulUploadTime {
+            status["lastUploadTime"] =
+                lastSuccessfulUploadTime.timeIntervalSince1970
+        }
+
+        if let lastUploadError = lastUploadError {
+            status["lastError"] = lastUploadError
+        }
+
+        // Count pending files
+        do {
+            let fileManager = FileManager.default
+            let locationFiles = try fileManager.contentsOfDirectory(
+                at: locationCacheURL, includingPropertiesForKeys: nil)
+            let activityFiles = try fileManager.contentsOfDirectory(
+                at: activityCacheURL, includingPropertiesForKeys: nil)
+
+            status["pendingLocationCount"] = locationFiles.count
+            status["pendingActivityCount"] = activityFiles.count
+        } catch {
+            print("Error counting pending files: \(error)")
+        }
+
+        return status
+    }
+
     private func loadUserAndDeviceInfo() {
         let defaults = UserDefaults.standard
 
@@ -94,12 +149,58 @@ class GrpcClient {
         }
     }
 
+    // Set the authorization token
+    func setAuthToken(_ token: String) {
+        queue.async {
+            self.authToken = token
+
+            // Save to UserDefaults
+            let defaults = UserDefaults.standard
+            defaults.set(token, forKey: "auth_token")
+            defaults.synchronize()
+
+            // Restart the client to use the new token
+            self.restartClient()
+        }
+    }
+
+    // Set the server settings
+    func setServerSettings(serverUrl: String, useTLS: Bool) {
+        queue.async {
+            // If settings changed, update and restart client
+            let settingsChanged =
+                self.serverHost != serverUrl || self.useSSL != useTLS
+
+            // Update settings
+            self.serverHost = serverUrl
+            self.useSSL = useTLS
+
+            // Save to UserDefaults
+            let defaults = UserDefaults.standard
+            defaults.set(serverUrl, forKey: "server_url")
+            defaults.set(useTLS, forKey: "use_tls")
+            defaults.synchronize()
+
+            // Restart the client if settings changed
+            if settingsChanged {
+                self.restartClient()
+            }
+        }
+    }
+
+    // Restart the gRPC client
+    private func restartClient() {
+        // Cancel any existing client
+        clientTask?.cancel()
+    }
+
     private func initDeviceMetadata() {
         deviceMetadata = Chronotopia_DeviceMetadata()
         deviceMetadata?.platform = "ios"
         deviceMetadata?.osVersion = UIDevice.current.systemVersion
         deviceMetadata?.deviceModel = UIDevice.current.model
-        deviceMetadata?.deviceLanguage = Locale.current.language.languageCode?.identifier ?? "en"
+        deviceMetadata?.deviceLanguage =
+            Locale.current.language.languageCode?.identifier ?? "en"
 
         // Try to get app version
         if let appVersion = Bundle.main.infoDictionary?[
@@ -206,9 +307,33 @@ class GrpcClient {
                     try await self.syncData()
                 } catch {
                     print("Error syncing data: \(error)")
+                    self.updateUploadError(error.localizedDescription)
                 }
             }
         }
+    }
+
+    private func updateUploadError(_ errorMessage: String) {
+        self.lastUploadError = errorMessage
+        let defaults = UserDefaults.standard
+        defaults.set(errorMessage, forKey: "last_upload_error")
+        defaults.synchronize()
+    }
+
+    private func recordSuccessfulUpload() {
+        // Update timestamps and counters
+        self.lastSuccessfulUploadTime = Date()
+        self.uploadSuccessCount += 1
+        self.lastUploadError = nil
+
+        // Save to UserDefaults
+        let defaults = UserDefaults.standard
+        defaults.set(
+            self.lastSuccessfulUploadTime?.timeIntervalSince1970,
+            forKey: "last_upload_time")
+        defaults.set(self.uploadSuccessCount, forKey: "upload_success_count")
+        defaults.set(nil, forKey: "last_upload_error")
+        defaults.synchronize()
     }
 
     private func syncData() async throws {
@@ -231,12 +356,7 @@ class GrpcClient {
         // Check for network connection
         guard hasNetworkConnection else {
             print("No network connection, skipping sync")
-            return
-        }
-
-        // Check if client is available
-        guard let tripTrackerClient = tripTrackerClient else {
-            print("gRPC client not initialized")
+            updateUploadError("No network connection")
             return
         }
 
@@ -262,15 +382,20 @@ class GrpcClient {
             let locationBatches = locationFiles.chunked(into: batchSize)
             let activityBatches = activityFiles.chunked(into: batchSize)
 
+            // Update attempt counter
+            await queue.async {
+                self.uploadAttemptCount += 1
+                let defaults = UserDefaults.standard
+                defaults.set(
+                    self.uploadAttemptCount, forKey: "upload_attempt_count")
+                defaults.synchronize()
+            }
+
             // Process location batches
             for batch in locationBatches {
                 // Create data packet
                 var dataPacket = Chronotopia_IngestBatch()
                 dataPacket.dateTime = now()
-
-                if let metadata = deviceMetadata {
-                    dataPacket.deviceMetadata = metadata
-                }
 
                 // Process each file in batch
                 for fileURL in batch {
@@ -288,6 +413,9 @@ class GrpcClient {
                     } catch {
                         print(
                             "Error processing location file \(fileURL.lastPathComponent): \(error)"
+                        )
+                        updateUploadError(
+                            "Error processing location file: \(error.localizedDescription)"
                         )
 
                         // Move to error directory if persistent error
@@ -313,20 +441,21 @@ class GrpcClient {
 
                 // Send the batch if it has any locations
                 if !dataPacket.locations.isEmpty {
-                    try await sendDataPacket(
-                        dataPacket, using: tripTrackerClient)
+                    withIngestClient { ingestClient in
+                        try await self.sendDataPacket(
+                            dataPacket, using: ingestClient)
+                    }
+
+                    // Record successful upload
+                    recordSuccessfulUpload()
                 }
             }
 
             // Process activity batches
             for batch in activityBatches {
                 // Create data packet
-                var dataPacket = Chronotopia_IngestBatch()
-                dataPacket.dateTime = now()
-
-                if let metadata = deviceMetadata {
-                    dataPacket.deviceMetadata = metadata
-                }
+                var ingestBatch = Chronotopia_IngestBatch()
+                ingestBatch.dateTime = now()
 
                 // Process each file in batch
                 for fileURL in batch {
@@ -337,13 +466,16 @@ class GrpcClient {
                             as! [String: Any]
 
                         let activityEvent = parseActivityEvent(jsonObject)
-                        dataPacket.activities.append(activityEvent)
+                        ingestBatch.activities.append(activityEvent)
 
                         // Delete file after successful processing
                         try fileManager.removeItem(at: fileURL)
                     } catch {
                         print(
                             "Error processing activity file \(fileURL.lastPathComponent): \(error)"
+                        )
+                        updateUploadError(
+                            "Error processing activity file: \(error.localizedDescription)"
                         )
 
                         // Move to error directory if persistent error
@@ -368,14 +500,21 @@ class GrpcClient {
                 }
 
                 // Send the batch if it has any activities
-                if !dataPacket.activities.isEmpty {
-                    try await sendDataPacket(
-                        dataPacket, using: tripTrackerClient)
+                if !ingestBatch.activities.isEmpty {
+                    withIngestClient {
+                        ingestClient in
+                        try await self.sendDataPacket(
+                            ingestBatch, using: ingestClient)
+                    }
+
+                    // Record successful upload
+                    recordSuccessfulUpload()
                 }
             }
 
         } catch {
             print("Error during data sync: \(error)")
+            updateUploadError("Sync error: \(error.localizedDescription)")
             throw error
         }
     }
@@ -427,10 +566,6 @@ class GrpcClient {
             locationPoint.dateTime = dateTimeFrom(date: Date())
         }
 
-        if let provider = json["provider"] as? String {
-            locationPoint.provider = provider
-        }
-
         if let isMockLocation = json["isMockLocation"] as? Bool {
             locationPoint.isMockLocation = isMockLocation
         }
@@ -440,7 +575,9 @@ class GrpcClient {
         }
 
         if let batteryLevel = json["batteryLevel"] as? Int32 {
-            locationPoint.batteryLevel = batteryLevel
+            if batteryLevel != -1 {
+                locationPoint.batteryLevel = UInt32(batteryLevel)
+            }
         }
 
         if let networkType = json["networkType"] as? String {
@@ -483,18 +620,18 @@ class GrpcClient {
         }
 
         // Parse timestamps
-        if let timestamp = json["timestamp"] as? Int64 {
-            activityEvent.timestamp = timestamp
-        } else {
-            activityEvent.timestamp = Int64(Date().timeIntervalSince1970 * 1000)
+        if let startTimeStr = json["startTime"] as? String {
+            let formatter = ISO8601DateFormatter()
+            if let date = formatter.date(from: startTimeStr) {
+                activityEvent.start = dateTimeFrom(date: date)
+            }
         }
 
-        if let startTime = json["startTime"] as? Int64 {
-            activityEvent.startTime = startTime
-        }
-
-        if let endTime = json["endTime"] as? Int64 {
-            activityEvent.endTime = endTime
+        if let endTimeStr = json["endTime"] as? String {
+            let formatter = ISO8601DateFormatter()
+            if let date = formatter.date(from: endTimeStr) {
+                activityEvent.end = dateTimeFrom(date: date)
+            }
         }
 
         // Parse movement data
@@ -509,30 +646,40 @@ class GrpcClient {
         return activityEvent
     }
 
-    private func startGRPCClient() {
+    private func withIngestClient(
+        operation: @escaping (
+            Chronotopia_Ingest.Client<HTTP2ClientTransport.Posix>
+        ) async throws ->
+            Void
+    ) {
+        print("gRPC to host: \(serverHost), SSL: \(useSSL)")
+
         clientTask = Task {
-            try await withGRPCClient(
-                transport: .http2NIOPosix(
-                    target: .dns(host: serverHost, port: serverPort),
-                    transportSecurity: useSSL ? .tls : .plaintext,
-                    config: .defaults { config in
-                        // Customize the config
-                        // config.backgroundActivityTimeout = .seconds(30)
-                        config.backoff.initial = .milliseconds(100)
-                        config.backoff.max = .seconds(5)
-                    }
-                )
-            ) { [weak self] client in
-                guard let self = self else { return }
-                self.client = client
-                self.tripTrackerClient = Chronotopia_Ingest.Client(
-                    wrapping: client)
+            do {
+                try await withGRPCClient(
+                    transport: .http2NIOPosix(
+                        target: .dns(host: serverHost, port: serverPort),
+                        transportSecurity: useSSL ? .tls : .plaintext,
+                        config: .defaults { config in
+                            // Customize the config
+                            config.backoff.initial = .milliseconds(100)
+                            config.backoff.max = .seconds(5)
+                        }
+                    )
+                ) { [weak self] client in
+                    guard self != nil else { return }
 
-                // Process any pending data immediately
-                await self.scheduleSyncData()
+                    // Create the Ingest client
+                    let ingestClient = Chronotopia_Ingest.Client(
+                        wrapping: client)
 
-                // Keep the task running to maintain connections
-                try await Task.sleep(for: .seconds(100_000_000))
+                    // Execute the provided operation with the client
+                    try await operation(ingestClient)
+                }
+            } catch {
+                print("gRPC client error: \(error)")
+                self.updateUploadError(
+                    "Connection error: \(error.localizedDescription)")
             }
         }
     }
@@ -541,8 +688,17 @@ class GrpcClient {
         _ dataPacket: Chronotopia_IngestBatch,
         using client: Chronotopia_Ingest.Client<HTTP2ClientTransport.Posix>
     ) async throws {
-        // Use client streaming for sending data
-        let response = try await client.submitBatch(dataPacket)
+        // Create metadata with authorization token
+        var metadata = GRPCCore.Metadata()
+        if let authToken = authToken {
+            metadata.addString("Bearer \(authToken)", forKey: "authorization")
+        }
+
+        // Use client streaming for sending data with metadata
+        let response = try await client.submitBatch(
+            dataPacket,
+            metadata: metadata
+        )
 
         print("Server response: \(response)")
 
@@ -561,16 +717,37 @@ class GrpcClient {
         }
     }
 
+    // Submit device metadata to the server
+    func submitDeviceMetadata() async throws {
+        guard let deviceMetadata = deviceMetadata else {
+            print("Device metadata or client not initialized")
+            return
+        }
+
+        // Create metadata with authorization token
+        var metadata = GRPCCore.Metadata()
+        if let authToken = authToken {
+            metadata.addString("Bearer \(authToken)", forKey: "authorization")
+        }
+
+        withIngestClient {
+            ingestClient in
+            // Submit device metadata
+            let response = try await ingestClient.submitDeviceMetadata(
+                deviceMetadata,
+                metadata: metadata
+            )
+
+            print("Device metadata submission response: \(response)")
+        }
+    }
+
     func shutdown() {
         // Cancel any sync task
         syncTask?.cancel()
 
         // Cancel client task
         clientTask?.cancel()
-
-        // Clear references
-        client = nil
-        tripTrackerClient = nil
     }
 
     func now() -> Chronotopia_DateTime {

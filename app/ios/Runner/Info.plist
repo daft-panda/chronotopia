@@ -13,7 +13,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Chronotopia App</string>
+	<string>Chronotopia</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -55,6 +55,19 @@
 		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>NSMotionUsageDescription</key>
+	<string>To build your timelime Chronotopia requires access to your position and motion 	information.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>To build your timelime Chronotopia requires access to your position and motion 	information.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>To build your timelime Chronotopia requires access to your position and motion 	information.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>To build your timelime Chronotopia requires access to your position and motion 	information.</string>
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>gps</string>
+		<string>location-services</string>
 	</array>
 </dict>
 </plist>
