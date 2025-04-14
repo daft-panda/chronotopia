@@ -1,4 +1,43 @@
-// Copyright 2025 Google LLC
+syntax = "proto3";
+
+package chronotopia;
+
+message RoadSegment {
+    uint64 id = 1;
+    uint64 osm_way_id = 2;
+    repeated LatLon coordinates = 3;
+    bool is_oneway = 4;
+    string highway_type = 5;
+    repeated uint64 connections = 6;
+    optional string name = 7;
+    optional uint32 interim_start_idx = 8;
+    optional uint32 interim_end_idx = 9;
+    repeated LatLon full_coordinates = 10;
+}
+
+// UUID type
+message UUID {
+    string value = 1;
+}
+
+message LatLon {
+    double lat = 1;
+    double lon = 2;
+}
+
+message Point {
+    LatLon latlon = 1;
+    DateTime dateTime = 3;
+    optional string label = 4;
+    optional string note = 5;
+    optional float elevation = 6;
+}
+
+message Points { 
+  repeated Point points = 1;
+}
+
+// BELOW Copyright 2025 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -11,10 +50,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
-syntax = "proto3";
-
-package chronotopia;
 
 import "google/protobuf/duration.proto";
 
@@ -103,24 +138,3 @@ message TimeZone {
   string version = 2;
 }
 
-// UUID type
-message UUID {
-    string value = 1;
-}
-
-message LatLon {
-    double lat = 1;
-    double lon = 2;
-}
-
-message Point {
-    LatLon latlon = 1;
-    DateTime dateTime = 3;
-    optional string label = 4;
-    optional string note = 5;
-    optional float elevation = 6;
-}
-
-message Points { 
-  repeated Point points = 1;
-}

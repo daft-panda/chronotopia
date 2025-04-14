@@ -11,6 +11,7 @@ pub struct Model {
     pub device_metadata_id: Option<Uuid>,
     pub batch_date_time: DateTimeWithTimeZone,
     pub received_date_time: DateTimeWithTimeZone,
+    pub ready_for_processing: bool,
     pub processed: Option<bool>,
     #[sea_orm(column_type = "JsonBinary")]
     pub source_info: Json,

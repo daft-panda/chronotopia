@@ -10,19 +10,6 @@ service Chronotopia {
     rpc DebugWindowPathFinding(WindowDebugRequest) returns (PathfindingDebugInfo);
 }
 
-message RoadSegment {
-    uint64 id = 1;
-    uint64 osm_way_id = 2;
-    repeated LatLon coordinates = 3;
-    bool is_oneway = 4;
-    string highway_type = 5;
-    repeated uint64 connections = 6;
-    optional string name = 7;
-    optional uint32 interim_start_idx = 8;
-    optional uint32 interim_end_idx = 9;
-    repeated LatLon full_coordinates = 10;
-}
-
 message WindowDebugRequest {
     uint32 trip_index = 1;
     uint32 window_index = 2;

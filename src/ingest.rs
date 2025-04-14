@@ -174,10 +174,17 @@ impl IngestService {
             location_models.push(location_model);
         }
 
+        let location_models = &mut location_models.into_iter();
+
         // Use bulk insert for better performance
-        if !location_models.is_empty() {
-            use user_locations_ingest::Entity as LocationPoints;
-            LocationPoints::insert_many(location_models)
+        loop {
+            let chunk: Vec<user_locations_ingest::ActiveModel> =
+                location_models.take(1000).collect();
+            if chunk.is_empty() {
+                break;
+            }
+
+            user_locations_ingest::Entity::insert_many(chunk)
                 .exec(&self.db)
                 .await
                 .map_err(|e| {
@@ -236,15 +243,20 @@ impl IngestService {
             activity_models.push(activity_model);
         }
 
+        let activity_models = &mut activity_models.into_iter();
+
         // Use bulk insert for better performance
-        if !activity_models.is_empty() {
-            use user_activity_ingest::Entity as ActivityEvents;
-            ActivityEvents::insert_many(activity_models)
+        loop {
+            let chunk: Vec<user_activity_ingest::ActiveModel> =
+                activity_models.take(1000).collect();
+            if chunk.is_empty() {
+                break;
+            }
+
+            user_activity_ingest::Entity::insert_many(chunk)
                 .exec(&self.db)
                 .await
-                .map_err(|e| {
-                    Status::internal(format!("Failed to insert activity events: {}", e))
-                })?;
+                .map_err(|e| Status::internal(format!("Failed to insert activity: {}", e)))?;
         }
 
         Ok(())
@@ -279,7 +291,7 @@ impl IngestService {
 
             let visit_model = user_visits_ingest::ActiveModel {
                 id: sea_orm::ActiveValue::NotSet,
-                batch_id: Set(batch_id),
+                batch_id: Set(Some(batch_id)),
                 latitude: Set(event.latitude),
                 longitude: Set(event.longitude),
                 horizontal_accuracy: Set(if event.horizontal_accuracy != 0.0 {
@@ -300,13 +312,19 @@ impl IngestService {
             visit_models.push(visit_model);
         }
 
+        let visit_models = &mut visit_models.into_iter();
+
         // Use bulk insert for better performance
-        if !visit_models.is_empty() {
-            use user_visits_ingest::Entity as VisitEvents;
-            VisitEvents::insert_many(visit_models)
+        loop {
+            let chunk: Vec<user_visits_ingest::ActiveModel> = visit_models.take(1000).collect();
+            if chunk.is_empty() {
+                break;
+            }
+
+            user_visits_ingest::Entity::insert_many(chunk)
                 .exec(&self.db)
                 .await
-                .map_err(|e| Status::internal(format!("Failed to insert visit events: {}", e)))?;
+                .map_err(|e| Status::internal(format!("Failed to insert visits: {}", e)))?;
         }
 
         Ok(())
@@ -721,6 +739,7 @@ impl Ingest for IngestService {
             device_metadata_id: Set(device_metadata_id),
             batch_date_time: Set(batch_datetime.fixed_offset()),
             received_date_time: Set(Utc::now().fixed_offset()),
+            ready_for_processing: Set(false),
             processed: Set(Some(false)),
             source_info: Set(source_info
                 .map(|v| serde_json::to_value(&v).unwrap_or_default())
@@ -750,6 +769,18 @@ impl Ingest for IngestService {
         if !batch.visits.is_empty() {
             self.store_visit_events(batch_id, batch.visits).await?;
         }
+
+        // Mark the batch as processed successfully
+        let update_batch = ingest_batches::ActiveModel {
+            id: Set(batch_id),
+            ready_for_processing: Set(true),
+            ..Default::default()
+        };
+
+        ingest_batches::Entity::update(update_batch)
+            .exec(&self.db)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to update batch status: {}", e)))?;
 
         info!(
             "Successfully stored ingest batch for user {} with ID {}",
@@ -975,6 +1006,7 @@ impl Ingest for IngestService {
             device_metadata_id: Set(device_metadata_id),
             batch_date_time: Set(export_datetime.fixed_offset()),
             received_date_time: Set(Utc::now().fixed_offset()),
+            ready_for_processing: Set(false),
             processed: Set(Some(false)),
             source_info: Set(serde_json::to_value(&source_info).unwrap_or_default()),
         };
@@ -1007,7 +1039,7 @@ impl Ingest for IngestService {
         // Mark the batch as processed successfully
         let update_batch = ingest_batches::ActiveModel {
             id: Set(batch_id),
-            processed: Set(Some(true)),
+            ready_for_processing: Set(true),
             ..Default::default()
         };
 

@@ -186,6 +186,7 @@ impl MigrationTrait for Migration {
                     .col(uuid_null(IngestBatches::DeviceMetadataId))
                     .col(timestamp_with_time_zone(IngestBatches::BatchDateTime))
                     .col(timestamp_with_time_zone(IngestBatches::ReceivedDateTime))
+                    .col(boolean(IngestBatches::ReadyForProcessing))
                     .col(boolean_null(IngestBatches::Processed))
                     .col(json_binary(IngestBatches::SourceInfo))
                     .foreign_key(
@@ -277,7 +278,7 @@ impl MigrationTrait for Migration {
                     .table(UserVisitsIngest::Table)
                     .if_not_exists()
                     .col(pk_auto(UserVisitsIngest::Id)) // Use auto-increment for high-speed inserts
-                    .col(integer(UserVisitsIngest::BatchId))
+                    .col(integer_null(UserVisitsIngest::BatchId))
                     .col(double(UserVisitsIngest::Latitude))
                     .col(double(UserVisitsIngest::Longitude))
                     .col(double_null(UserVisitsIngest::HorizontalAccuracy))
@@ -429,7 +430,12 @@ impl MigrationTrait for Migration {
                     .col(ImportSummary::UserId)
                     .to_owned(),
             )
-            .await
+            .await?;
+
+        let db = manager.get_connection();
+        db.execute_unprepared("INSERT INTO public.users (id, first_name, last_name, user_name, email, password, salt, date_created, last_modified, status) VALUES ('76879c96-210c-4ad6-b6b5-5088b843489a', 'Test', 'User', NULL, 'test@test.com', '\x246172676f6e32696424763d3139246d3d31393435362c743d322c703d312432456d32536b37534b5978566864563541432f65646724636e7a3641396870506e4f644c444f6a7a69484b4562673442397845382b4847424f6456326578422b6151', '\x32456d32536b37534b5978566864563541432f656467', '2025-04-12 10:16:50.743004+00', '2025-04-12 10:16:50.743004+00', 'active');
+    ").await.unwrap();
+        Ok(())
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
@@ -547,6 +553,7 @@ enum IngestBatches {
     DeviceMetadataId,
     BatchDateTime,
     ReceivedDateTime,
+    ReadyForProcessing,
     Processed,
     SourceInfo,
 }

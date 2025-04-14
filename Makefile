@@ -21,4 +21,6 @@ migrate-down:
 	sea-orm-cli migrate down
 
 generate-db-entity:
-	sea-orm-cli generate entity -o src/entity
+	echo 'Generating entities into tmp-entity, copy over the ones you need'
+	mkdir -p tmp-entity
+	sea-orm-cli generate entity -o tmp-entity/

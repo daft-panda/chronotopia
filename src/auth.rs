@@ -1,4 +1,4 @@
-use log::{debug, error};
+use log::{trace, warn};
 use tonic::{Request, Status};
 use uuid::Uuid;
 
@@ -19,11 +19,11 @@ pub fn auth_interceptor(mut req: Request<()>) -> Result<Request<()>, Status> {
                     Ok(user_id) => {
                         // Add the user ID to the request extensions
                         req.extensions_mut().insert(user_id);
-                        debug!("Authenticated user: {}", user_id);
+                        trace!("Authenticated user: {}", user_id);
                         Ok(req)
                     }
                     Err(e) => {
-                        error!("Invalid token format: {}", e);
+                        warn!("Invalid token format: {}", e);
                         Err(Status::unauthenticated("Invalid authorization token"))
                     }
                 }

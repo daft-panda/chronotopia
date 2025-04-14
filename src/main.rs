@@ -1,4 +1,7 @@
 #![allow(dead_code, unused_variables)]
+#![feature(structural_match)]
+#![feature(fmt_helpers_for_derive)]
+#![feature(panic_internals)]
 mod auth;
 mod debug;
 mod entity;
@@ -30,12 +33,11 @@ use route_matcher::{
     MatchedWaySegment, PathfindingDebugInfo, PathfindingResult, RouteMatchJob, RouteMatcher,
     RouteMatcherConfig, TileConfig, WindowTrace,
 };
-use sea_orm::{Database, DatabaseConnection};
+use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
-use std::usize;
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
@@ -71,8 +73,9 @@ async fn main() -> Result<()> {
         .init();
     info!("Starting Chronotopia with Route-Based Matcher");
 
-    let db: DatabaseConnection =
-        Database::connect("postgres://postgres:example@localhost/chronotopia").await?;
+    let mut conn_opts: ConnectOptions = "postgres://postgres:example@localhost/chronotopia".into();
+    conn_opts.sqlx_logging(false);
+    let db: DatabaseConnection = Database::connect(conn_opts).await?;
 
     // Create route matcher
     let route_matcher = RouteMatcher::new(ROUTE_MATCHER_CONFIG.clone())?;

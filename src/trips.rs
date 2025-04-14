@@ -1,10 +1,11 @@
 use chrono::FixedOffset;
+use geo::{BoundingRect, Polygon};
+use geo_postgis::FromPostgis;
 use log::{debug, error, info, warn};
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
-use wkt::TryFromWkt;
 
 use crate::ROUTE_MATCHER_CONFIG;
 use crate::entity::sea_orm_active_enums::ActivityType;
@@ -347,13 +348,19 @@ impl Trips for TripsService {
             }
         };
 
-        let mut route_matcher = RouteMatcher::new(ROUTE_MATCHER_CONFIG.clone()).unwrap();
-        let bbox: geo::Rect = geo::Rect::try_from_wkt_str(&trip.bounding_box).unwrap();
+        let mut route_matcher: RouteMatcher =
+            RouteMatcher::new(ROUTE_MATCHER_CONFIG.clone()).unwrap();
+        let bbox: Option<Polygon<f64>> = match trip.bounding_box {
+            postgis::ewkb::GeometryT::<postgis::ewkb::Point>::Polygon(p) => {
+                std::option::Option::<geo::Polygon>::from_postgis(&p)
+            }
+            _ => None,
+        };
 
         // Fetch OSM way metadata
         let osm_metadata = match route_matcher
             .tile_loader
-            .get_way_metadata_from_bbox(bbox, &osm_way_ids)
+            .get_way_metadata_from_bbox(bbox.unwrap().bounding_rect().unwrap(), &osm_way_ids)
         {
             Ok(metadata) => metadata,
             Err(e) => {

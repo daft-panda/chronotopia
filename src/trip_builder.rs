@@ -2,6 +2,8 @@ use anyhow::Result;
 use chrono::{DateTime, FixedOffset, Utc};
 use geo::{Coord, Distance, Haversine, Point};
 use log::{debug, error, info, warn};
+use postgis::ewkb::{LineString, Polygon};
+use sea_orm::ActiveValue::NotSet;
 use sea_orm::QuerySelect;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, DatabaseTransaction,
@@ -10,9 +12,7 @@ use sea_orm::{
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::entity::{
-    ingest_batches, trips, user_locations_ingest, user_visits_ingest,
-};
+use crate::entity::{ingest_batches, trips, user_locations_ingest, user_visits_ingest};
 use crate::proto::{self, Points};
 use crate::route_matcher::{MatchedWaySegment, RouteMatchJob, RouteMatcher};
 
@@ -56,6 +56,11 @@ impl TripBuilder {
                 ingest_batches::Column::Processed
                     .is_null()
                     .or(ingest_batches::Column::Processed.eq(false)),
+            )
+            .filter(
+                ingest_batches::Column::ReadyForProcessing
+                    .is_not_null()
+                    .and(ingest_batches::Column::ReadyForProcessing.eq(true)),
             )
             .select_only()
             .column(ingest_batches::Column::UserId)
@@ -365,8 +370,8 @@ impl TripBuilder {
         let trip = trips::ActiveModel {
             id: Set(trip_id),
             user_id: Set(context.user_id),
-            geometry: Set(linestring),
-            bounding_box: Set(bounding_box),
+            geometry: Set(postgis::ewkb::GeometryT::LineString(linestring)),
+            bounding_box: Set(postgis::ewkb::GeometryT::Polygon(bounding_box)),
             start_time: Set(first_point.date_time),
             end_time: Set(last_point.date_time),
             distance_meters: Set(total_distance),
@@ -458,7 +463,7 @@ impl TripBuilder {
         // but with a NULL batch_id to indicate it's derived rather than imported
         let visit = user_visits_ingest::ActiveModel {
             id: sea_orm::ActiveValue::NotSet,
-            batch_id: Set(-1), // Special value to indicate derived visit
+            batch_id: NotSet,
             latitude: Set(latitude),
             longitude: Set(longitude),
             horizontal_accuracy: Set(Some(MAX_VISIT_RADIUS_METERS)),
@@ -553,7 +558,7 @@ impl TripBuilder {
                     id: Set(trip_id),
                     processed: Set(true),
                     osm_way_ids: Set(way_ids_json),
-                    bounding_box: Set(bounding_box),
+                    bounding_box: Set(postgis::ewkb::GeometryT::Polygon(bounding_box)),
                     route_match_trace: Set(Some(route_match_trace)),
                     geo_json: Set(Some(serde_json::to_string(&matched_geojson)?)),
                     ..Default::default()
@@ -574,7 +579,7 @@ impl TripBuilder {
     }
 
     /// Calculate the bounding box of a trip as a PostGIS polygon
-    fn calculate_trip_bounding_box(&self, segments: &[MatchedWaySegment]) -> Result<String> {
+    fn calculate_trip_bounding_box(&self, segments: &[MatchedWaySegment]) -> Result<Polygon> {
         // Find min/max coordinates from all segments
         let mut min_lon = f64::MAX;
         let mut min_lat = f64::MAX;
@@ -597,26 +602,50 @@ impl TripBuilder {
         max_lon += buffer;
         max_lat += buffer;
 
-        // Create a PostGIS polygon in WKT format
-        let polygon = format!(
-            "SRID=4326;POLYGON(({} {}, {} {}, {} {}, {} {}, {} {}))",
-            min_lon,
-            min_lat, // bottom-left
-            max_lon,
-            min_lat, // bottom-right
-            max_lon,
-            max_lat, // top-right
-            min_lon,
-            max_lat, // top-left
-            min_lon,
-            min_lat // close the polygon by repeating first point
-        );
+        // Create a ring by listing the corner points of the bounding box and closing the polygon
+        let ring = vec![
+            postgis::ewkb::Point {
+                x: min_lon,
+                y: min_lat,
+                srid: Some(4326),
+            }, // bottom-left
+            postgis::ewkb::Point {
+                x: max_lon,
+                y: min_lat,
+                srid: Some(4326),
+            }, // bottom-right
+            postgis::ewkb::Point {
+                x: max_lon,
+                y: max_lat,
+                srid: Some(4326),
+            }, // top-right
+            postgis::ewkb::Point {
+                x: min_lon,
+                y: max_lat,
+                srid: Some(4326),
+            }, // top-left
+            postgis::ewkb::Point {
+                x: min_lon,
+                y: min_lat,
+                srid: Some(4326),
+            }, // closing the ring by repeating the first point
+        ];
+
+        let linestring = LineString {
+            points: ring,
+            srid: Some(4326),
+        };
+
+        // Assemble the polygon from the ring; note that the rings field is a vector of rings
+        let polygon = Polygon {
+            rings: vec![linestring],
+            srid: Some(4326),
+        };
 
         Ok(polygon)
     }
 
-    /// Generate an initial bounding box from location points
-    fn generate_bounding_box(&self, points: &[user_locations_ingest::Model]) -> Result<String> {
+    fn generate_bounding_box(&self, points: &[user_locations_ingest::Model]) -> Result<Polygon> {
         // Find min/max coordinates from all points
         let mut min_lon = f64::MAX;
         let mut min_lat = f64::MAX;
@@ -637,20 +666,45 @@ impl TripBuilder {
         max_lon += buffer;
         max_lat += buffer;
 
-        // Create a PostGIS polygon in WKT format
-        let polygon = format!(
-            "SRID=4326;POLYGON(({} {}, {} {}, {} {}, {} {}, {} {}))",
-            min_lon,
-            min_lat, // bottom-left
-            max_lon,
-            min_lat, // bottom-right
-            max_lon,
-            max_lat, // top-right
-            min_lon,
-            max_lat, // top-left
-            min_lon,
-            min_lat // close the polygon by repeating first point
-        );
+        // Create a ring by listing the corner points of the bounding box and closing the polygon
+        let ring = vec![
+            postgis::ewkb::Point {
+                x: min_lon,
+                y: min_lat,
+                srid: Some(4326),
+            }, // bottom-left
+            postgis::ewkb::Point {
+                x: max_lon,
+                y: min_lat,
+                srid: Some(4326),
+            }, // bottom-right
+            postgis::ewkb::Point {
+                x: max_lon,
+                y: max_lat,
+                srid: Some(4326),
+            }, // top-right
+            postgis::ewkb::Point {
+                x: min_lon,
+                y: max_lat,
+                srid: Some(4326),
+            }, // top-left
+            postgis::ewkb::Point {
+                x: min_lon,
+                y: min_lat,
+                srid: Some(4326),
+            }, // closing the ring by repeating the first point
+        ];
+
+        let linestring = LineString {
+            points: ring,
+            srid: Some(4326),
+        };
+
+        // Assemble the polygon from the ring; note that the rings field is a vector of rings
+        let polygon = Polygon {
+            rings: vec![linestring],
+            srid: Some(4326),
+        };
 
         Ok(polygon)
     }
@@ -670,14 +724,22 @@ impl TripBuilder {
     }
 
     /// Generate a PostGIS linestring from points
-    fn generate_linestring(&self, points: &[user_locations_ingest::Model]) -> Result<String> {
-        // Create a PostGIS-compatible linestring in WKT format
-        let coords: Vec<String> = points
+    fn generate_linestring(&self, points: &[user_locations_ingest::Model]) -> Result<LineString> {
+        // Map each point to a PostGIS point with SRID 4326.
+        let pts: Vec<postgis::ewkb::Point> = points
             .iter()
-            .map(|p| format!("{} {}", p.longitude, p.latitude))
+            .map(|p| postgis::ewkb::Point {
+                x: p.longitude,
+                y: p.latitude,
+                srid: Some(4326),
+            })
             .collect();
 
-        let linestring = format!("SRID=4326;LINESTRING({})", coords.join(","));
+        let linestring = LineString {
+            points: pts,
+            srid: Some(4326),
+        };
+
         Ok(linestring)
     }
 
