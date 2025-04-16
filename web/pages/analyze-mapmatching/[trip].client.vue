@@ -13,7 +13,7 @@
           {{ showDebugInfo ? 'Hide Debug Info' : 'Show Debug Info' }}
         </button>
         <button class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded" @click="goBack">
-          Back to Trips
+          Back to Trip
         </button>
       </div>
     </div>
@@ -271,7 +271,7 @@
             </MglGeoJsonSource>
 
             <!-- Trip points -->
-            <MglMarker v-for="(point, index) in routeMatchTrace?.trip?.points" :key="Number(index)"
+            <MglMarker v-for="(point, index) in tripData?.points" :key="Number(index)"
               :coordinates="[point.latlon!.lon, point.latlon!.lat]">
               <template #marker>
                 <div
@@ -307,7 +307,7 @@
 
                   <div class="popup-actions flex gap-2">
                     <button class="bg-gray-700 hover:bg-gray-600 text-white px-2 py-1 rounded text-xs"
-                      @click="debugGeojsonSource = JSON.parse(routeMatchTrace!.pointCandidates[index].value) as GeoJSON<Geometry, GeoJsonProperties>">
+                      @click="debugGeojsonSource = JSON.parse(routeMatchTrace!.pointCandidates[index]) as GeoJSON">
                       Show Candidates
                     </button>
                     <button class="bg-gray-700 hover:bg-gray-600 text-white px-2 py-1 rounded text-xs"
@@ -355,413 +355,503 @@
 </template>
 
 <script lang="ts" setup>
-import { type RoadSegment, type RouteMatchTrace, type PathfindingResult, type PathfindingAttempt, type Point, type WindowTrace, type PathfindingDebugInfo, PathfindingResult_ResultType } from '~/model/chronotopia_pb';
-import { Popup, type LineLayerSpecification, type LngLatLike, type Map } from 'maplibre-gl';
-import { MglFullscreenControl, MglGeolocateControl, MglMap, MglMarker, MglNavigationControl, MglGeoJsonSource, MglLineLayer } from '#components';
-import type { Feature, GeoJSON, GeoJsonProperties, Geometry } from 'geojson';
+import { LngLatBounds, Popup, type LineLayerSpecification, type LngLatLike, type Map } from 'maplibre-gl';
+import { MglFullscreenControl, MglGeolocateControl, MglMap, MglMarker, MglNavigationControl, MglGeoJsonSource, MglLineLayer, MglPopup } from '#components';
+import type { Feature, GeoJSON } from 'geojson';
 import { useRoute, useRouter } from 'vue-router';
-import type { DateTime } from '~/model/datetime_pb';
+import type { RouteMatchTrace, Trip, WindowTrace } from '~/model/trips_pb';
+import type { DateTime, Point, RoadSegment } from '~/model/common_pb';
+import { type PathfindingDebugInfo, type PathfindingAttempt, PathfindingResult_ResultType, type PathfindingResult } from '~/model/chronotopia_pb';
 
-const { $api } = useNuxtApp();
+const { api, tripsApi } = useApi();
 const route = useRoute();
 const router = useRouter();
-const tripIndex = parseInt(route.params.trip as string);
+const tripId = route.params.trip as string;
 const routeMatchTrace: Ref<RouteMatchTrace | null> = ref(null);
-const selectedWindowIndex: Ref<number | null> = ref(null);
+const tripData: Ref<Trip | undefined> = ref(undefined);
+const selectedWindowIndex = ref<number | null>(null);
 const selectedWindow: Ref<WindowTrace | undefined> = ref(undefined);
-const debugGeojsonSource: Ref<GeoJSON<Geometry, GeoJsonProperties> | undefined> = ref(undefined);
-const highlightedSegment: Ref<RoadSegment | null> = ref(null);
-const hoveredSegment: Ref<RoadSegment | null> = ref(null);
+const debugGeojsonSource = ref<GeoJSON | undefined>(undefined);
+const highlightedSegment = ref<RoadSegment | null>(null);
+const hoveredSegment = ref<RoadSegment | null>(null);
 const showConstraints = ref(false);
 const showDebugInfo = ref(false);
-const pathDebugInfo: Ref<PathfindingDebugInfo | null> = ref(null);
+const pathDebugInfo = ref<PathfindingDebugInfo | null>(null);
 const map = useMglMap();
-const mmap = map.map as Map;
 const layers: string[] = [];
 const layout = {
   'line-join': 'round',
   'line-cap': 'round'
 } as LineLayerSpecification['layout'];
 
-// Fetch the route match trace for the specified trip
-onMounted(async () => {
-  try {
-    const response = await $api.getRouteMatchTrace({ tripIndex });
-    routeMatchTrace.value = response;
+// Use the tripsApi pattern to fetch the trip details first
+useAsyncData(
+  'tripDetail',
+  async () => {
+    try {
+      const response = await tripsApi.getTripDetails({
+        tripId: {
+          value: tripId
+        }
+      });
 
-    watch(() => map.isLoaded, () => {
-      for (const windowIdx in routeMatchTrace.value!.windowTraces) {
-        const window = routeMatchTrace.value!.windowTraces[windowIdx];
-        const sourceId = `window-${windowIdx}`;
-        layers.push(sourceId);
+      tripData.value = response.trip;
 
-        // Create the main segment geojson
-        const geojson: GeoJSON<Geometry, GeoJsonProperties> = {
-          type: 'FeatureCollection',
-          features: window.segments.map((segment, segIdx) => {
-            // Extract coordinates for the feature
-            let coordinates = [];
+      // Set the routeMatchTrace from the trip details
+      if (response.trip?.routeMatchTrace) {
+        routeMatchTrace.value = response.trip.routeMatchTrace;
+      } else {
+        throw new Error("No route match trace available for this trip");
+      }
 
-            // Handle cases where interimStartIdx > interimEndIdx (reversed segment)
-            const isReversedSegment = segment.interimStartIdx !== undefined &&
-              segment.interimEndIdx !== undefined &&
-              segment.interimStartIdx > segment.interimEndIdx;
+      return response.trip;
+    } catch (err) {
+      console.error(`Error fetching trip ${tripId}:`, err);
+      throw new Error('Failed to load trip details');
+    }
+  }
+);
 
-            if (isReversedSegment && segment.fullCoordinates) {
-              // For reversed segments, we need to extract the coordinates in reverse
-              const startIdx = segment.interimStartIdx!;
-              const endIdx = segment.interimEndIdx!;
+// Watch for when the map and data are loaded
+watch(() => [map.isLoaded, routeMatchTrace.value], ([isLoaded, trace]) => {
+  if (isLoaded && trace) {
+    setupMapLayers();
+  }
+}, { immediate: true });
 
-              // Get coordinates from full coordinates in reverse order
-              const extractedCoords = [];
-              for (let i = startIdx; i >= endIdx; i--) {
-                if (i < segment.fullCoordinates.length) {
-                  extractedCoords.push([
-                    segment.fullCoordinates[i].lon,
-                    segment.fullCoordinates[i].lat
-                  ]);
-                }
-              }
-              coordinates = extractedCoords;
-            } else {
-              // Normal case: use coordinates as provided
-              coordinates = segment.coordinates.map(v => [v.lon, v.lat]);
+// Setup map layers once both map and data are loaded
+const setupMapLayers = () => {
+  if (!map.map || !routeMatchTrace.value) return;
+
+  const mmap = map.map as Map;
+
+  // Clear any existing layers
+  layers.forEach(layerId => {
+    if (mmap.getLayer(layerId)) {
+      mmap.removeLayer(layerId);
+    }
+    if (mmap.getSource(layerId)) {
+      mmap.removeSource(layerId);
+    }
+  });
+  layers.length = 0;
+
+  // Add layers for each window
+  for (const windowIdx in routeMatchTrace.value.windowTraces) {
+    const window = routeMatchTrace.value.windowTraces[windowIdx];
+    const sourceId = `window-${windowIdx}`;
+    layers.push(sourceId);
+
+    // Create the main segment geojson
+    const geojson: GeoJSON = {
+      type: 'FeatureCollection',
+      features: window.segments.map((segment, segIdx) => {
+        // Extract coordinates for the feature
+        let coordinates = [];
+
+        // Handle cases where interimStartIdx > interimEndIdx (reversed segment)
+        const isReversedSegment = segment.interimStartIdx !== undefined &&
+          segment.interimEndIdx !== undefined &&
+          segment.interimStartIdx > segment.interimEndIdx;
+
+        if (isReversedSegment && segment.fullCoordinates) {
+          // For reversed segments, we need to extract the coordinates in reverse
+          const startIdx = segment.interimStartIdx!;
+          const endIdx = segment.interimEndIdx!;
+
+          // Get coordinates from full coordinates in reverse order
+          const extractedCoords = [];
+          for (let i = startIdx; i >= endIdx; i--) {
+            if (i < segment.fullCoordinates.length) {
+              extractedCoords.push([
+                segment.fullCoordinates[i].lon,
+                segment.fullCoordinates[i].lat
+              ]);
             }
+          }
+          coordinates = extractedCoords;
+        } else {
+          // Normal case: use coordinates as provided
+          coordinates = segment.coordinates.map(v => [v.lon, v.lat]);
+        }
 
-            // Create properties object with all relevant info
-            const properties = {
+        // Create properties object with all relevant info
+        const properties = {
+          window: windowIdx,
+          segmentId: segment.id.toString(),
+          osmWayId: segment.osmWayId.toString(),
+          segmentIndex: segIdx,
+          name: segment.name || 'Unnamed',
+          highwayType: segment.highwayType,
+          isOneway: segment.isOneway,
+          uniqueId: `${windowIdx}-${segment.id.toString()}`,
+          // Add interim indices if available
+          interimStartIdx: segment.interimStartIdx !== undefined ? segment.interimStartIdx : 0,
+          interimEndIdx: segment.interimEndIdx !== undefined ? segment.interimEndIdx :
+            (segment.fullCoordinates ? segment.fullCoordinates.length - 1 : coordinates.length - 1),
+          isPartialSegment: segment.interimStartIdx !== undefined || segment.interimEndIdx !== undefined,
+          isReversedSegment: isReversedSegment,
+          // Add constraint status
+          isConstrained: window.usedConstraints,
+          isBridge: window.bridge
+        };
+
+        return {
+          type: 'Feature',
+          properties: properties,
+          geometry: {
+            type: 'LineString',
+            coordinates: coordinates
+          }
+        } as Feature;
+      })
+    };
+
+    // Add source
+    mmap.addSource(sourceId, {
+      type: 'geojson',
+      data: geojson
+    });
+
+    // Add the main line layer
+    mmap.addLayer({
+      id: sourceId,
+      type: 'line',
+      source: sourceId,
+      layout: layout,
+      paint: {
+        'line-color': getWindowColor(Number(windowIdx)),
+        'line-width': 8,
+        // Add dashed line for bridges (unconstrained paths)
+        'line-dasharray': window.bridge ? [2, 1] : [1, 0]
+      } as LineLayerSpecification['paint']
+    });
+
+    // For segments with interim indices, also add full segment with low opacity
+    // to provide context
+    if (window.segments.some(s => s.interimStartIdx !== undefined || s.interimEndIdx !== undefined)) {
+      const fullSegmentSourceId = `window-${windowIdx}-full`;
+      layers.push(fullSegmentSourceId);
+
+      const fullSegmentsGeoJSON: GeoJSON = {
+        type: 'FeatureCollection',
+        features: window.segments.filter(segment =>
+          segment.fullCoordinates &&
+          (segment.interimStartIdx !== undefined || segment.interimEndIdx !== undefined)
+        ).map((segment, segIdx) => {
+          // Use full coordinates for context
+          const fullCoordinates = segment.fullCoordinates?.map(v => [v.lon, v.lat]) || [];
+
+          return {
+            type: 'Feature',
+            properties: {
               window: windowIdx,
               segmentId: segment.id.toString(),
-              osmWayId: segment.osmWayId.toString(),
               segmentIndex: segIdx,
-              name: segment.name || 'Unnamed',
-              highwayType: segment.highwayType,
-              isOneway: segment.isOneway,
-              uniqueId: `${windowIdx}-${segment.id.toString()}`,
-              // Add interim indices if available
-              interimStartIdx: segment.interimStartIdx !== undefined ? segment.interimStartIdx : 0,
-              interimEndIdx: segment.interimEndIdx !== undefined ? segment.interimEndIdx :
-                (segment.fullCoordinates ? segment.fullCoordinates.length - 1 : coordinates.length - 1),
-              isPartialSegment: segment.interimStartIdx !== undefined || segment.interimEndIdx !== undefined,
-              isReversedSegment: isReversedSegment,
-              // Add constraint status
-              isConstrained: window.usedConstraints,
-              isBridge: window.bridge
-            };
-
-            return {
-              type: 'Feature',
-              properties: properties,
-              geometry: {
-                type: 'LineString',
-                coordinates: coordinates
-              }
+              uniqueId: `${windowIdx}-${segment.id.toString()}-full`,
+              isFullSegment: true
+            },
+            geometry: {
+              type: 'LineString',
+              coordinates: fullCoordinates
             }
-          })
-        }
+          } as Feature;
+        })
+      };
 
-        const mmap = map.map as Map;
-
-        mmap.addSource(sourceId, {
+      // Only add if there are features
+      if (fullSegmentsGeoJSON.features.length > 0) {
+        mmap.addSource(fullSegmentSourceId, {
           type: 'geojson',
-          data: geojson
+          data: fullSegmentsGeoJSON
         });
 
-        // Add the main line layer
+        // Add full segments with low opacity and dashed
         mmap.addLayer({
-          id: sourceId,
+          id: fullSegmentSourceId,
           type: 'line',
-          source: sourceId,
-          layout: layout,
+          source: fullSegmentSourceId,
+          layout: {
+            'line-join': 'round',
+            'line-cap': 'round'
+          },
           paint: {
             'line-color': getWindowColor(Number(windowIdx)),
-            'line-width': 8,
-            // Add dashed line for bridges (unconstrained paths)
-            'line-dasharray': window.bridge ? [2, 1] : [1, 0]
+            'line-width': 4,
+            'line-opacity': 0.3,
+            'line-dasharray': [2, 2]
           } as LineLayerSpecification['paint']
         });
-
-        // For segments with interim indices, also add full segment with low opacity
-        // to provide context
-        if (window.segments.some(s => s.interimStartIdx !== undefined || s.interimEndIdx !== undefined)) {
-          const fullSegmentSourceId = `window-${windowIdx}-full`;
-          const fullSegmentsGeoJSON: GeoJSON<Geometry, GeoJsonProperties> = {
-            type: 'FeatureCollection',
-            features: window.segments.filter(segment =>
-              segment.fullCoordinates &&
-              (segment.interimStartIdx !== undefined || segment.interimEndIdx !== undefined)
-            ).map((segment, segIdx) => {
-              // Use full coordinates for context
-              const fullCoordinates = segment.fullCoordinates?.map(v => [v.lon, v.lat]) || [];
-
-              return {
-                type: 'Feature',
-                properties: {
-                  window: windowIdx,
-                  segmentId: segment.id.toString(),
-                  segmentIndex: segIdx,
-                  uniqueId: `${windowIdx}-${segment.id.toString()}-full`,
-                  isFullSegment: true
-                },
-                geometry: {
-                  type: 'LineString',
-                  coordinates: fullCoordinates
-                }
-              }
-            })
-          };
-
-          // Only add if there are features
-          if (fullSegmentsGeoJSON.features.length > 0) {
-            mmap.addSource(fullSegmentSourceId, {
-              type: 'geojson',
-              data: fullSegmentsGeoJSON
-            });
-
-            // Add full segments with low opacity and dashed
-            mmap.addLayer({
-              id: fullSegmentSourceId,
-              type: 'line',
-              source: fullSegmentSourceId,
-              layout: {
-                'line-join': 'round',
-                'line-cap': 'round'
-              },
-              paint: {
-                'line-color': getWindowColor(Number(windowIdx)),
-                'line-width': 4,
-                'line-opacity': 0.3,
-                'line-dasharray': [2, 2]
-              } as LineLayerSpecification['paint']
-            });
-          }
-        }
-
-        // Add constraint visualization
-        if (window.constraints && window.constraints.length > 0) {
-          // Create a source for constraint connections
-          const constraintSourceId = `window-${windowIdx}-constraints`;
-          const constraintPointsId = `window-${windowIdx}-constraint-points`;
-
-          // Create constraint connections
-          const constraintFeatures = window.constraints.map(constraint => {
-            // Get the point coordinates
-            const point = routeMatchTrace.value!.trip?.points[constraint.pointIdx];
-            if (!point || !point.latlon) return null;
-
-            // Find the segment
-            const segment = window.segments.find(s => s.id === constraint.segmentId);
-            if (!segment) return null;
-
-            // Create a line from point to the segment centroid
-            const segmentCentroid = calculateSegmentCentroid(segment);
-
-            return {
-              type: 'Feature',
-              properties: {
-                pointIdx: constraint.pointIdx,
-                segmentId: constraint.segmentId.toString(),
-                wayId: constraint.wayId.toString(),
-                distance: constraint.distance,
-                description: `Constraint: Point ${constraint.pointIdx} to Segment ${constraint.segmentId} (Way ${constraint.wayId}), Distance: ${constraint.distance.toFixed(2)}m`
-              },
-              geometry: {
-                type: 'LineString',
-                coordinates: [
-                  [point.latlon.lon, point.latlon.lat],
-                  segmentCentroid
-                ]
-              }
-            };
-          }).filter(f => f !== null) as Feature[];
-
-          const constraintPointsFeatures = window.constraints.map(constraint => {
-            const point = routeMatchTrace.value!.trip?.points[constraint.pointIdx];
-            if (!point || !point.latlon) return null;
-
-            return {
-              type: 'Feature',
-              properties: {
-                pointIdx: constraint.pointIdx,
-                segmentId: constraint.segmentId.toString(),
-                wayId: constraint.wayId.toString(),
-                description: `Constrained Point ${constraint.pointIdx}`
-              },
-              geometry: {
-                type: 'Point',
-                coordinates: [point.latlon.lon, point.latlon.lat]
-              }
-            };
-          }).filter(f => f !== null) as Feature[];
-
-          // Add constraint connections source and layer
-          mmap.addSource(constraintSourceId, {
-            type: 'geojson',
-            data: {
-              type: 'FeatureCollection',
-              features: constraintFeatures
-            }
-          });
-
-          mmap.addLayer({
-            id: constraintSourceId,
-            type: 'line',
-            source: constraintSourceId,
-            layout: {
-              'line-join': 'round',
-              'line-cap': 'round',
-              'visibility': 'none' // Hidden by default
-            },
-            paint: {
-              'line-color': '#FF00FF',
-              'line-width': 3,
-              'line-dasharray': [2, 1]
-            } as LineLayerSpecification['paint']
-          });
-
-          // Add constraint points source and layer
-          mmap.addSource(constraintPointsId, {
-            type: 'geojson',
-            data: {
-              type: 'FeatureCollection',
-              features: constraintPointsFeatures
-            }
-          });
-
-          mmap.addLayer({
-            id: constraintPointsId,
-            type: 'circle',
-            source: constraintPointsId,
-            layout: {
-              'visibility': 'none' // Hidden by default
-            },
-            paint: {
-              'circle-radius': 8,
-              'circle-color': '#FF00FF',
-              'circle-stroke-width': 2,
-              'circle-stroke-color': '#FFFFFF'
-            }
-          });
-
-          // Popup for constraints
-          mmap.on('click', constraintSourceId, (e) => {
-            if (e.features && e.features.length > 0) {
-              const coordinates = e.lngLat;
-              const feature = e.features[0];
-
-              new Popup()
-                .setLngLat(coordinates)
-                .setHTML(`
-      <div class="constraint-popup">
-        <h4>Constraint Details</h4>
-        <p>${feature.properties.description}</p>
-      </div>
-    `)
-                .addTo(mmap);
-            }
-          });
-        }
-
-        // Add a highlight outline layer that will be visible when a segment is hovered
-        mmap.addLayer({
-          id: `${sourceId}-highlight`,
-          type: 'line',
-          source: sourceId,
-          layout: layout,
-          paint: {
-            'line-color': '#FFFFFF',
-            'line-width': 12,
-            'line-opacity': 0 // Start with 0 opacity, we'll update this with setFilter
-          } as LineLayerSpecification['paint'],
-          filter: ['==', ['get', 'uniqueId'], ''] // Start with an empty filter
-        });
-
-        // Create a popup, but don't add it to the map yet.
-        const popup = new Popup({
-          closeButton: false,
-          closeOnClick: false
-        });
-
-        // Make sure to detect marker change for overlapping markers
-        // and use mousemove instead of mouseenter event
-        let currentFeatureCoordinates = "";
-        mmap.on('mousemove', layers, (e) => {
-          const featureCoordinates = e.lngLat.toString();
-          if (currentFeatureCoordinates !== featureCoordinates) {
-            currentFeatureCoordinates = featureCoordinates;
-
-            // Change the cursor style as a UI indicator.
-            mmap.getCanvas().style.cursor = 'pointer';
-
-            const coordinates = e.lngLat;
-            const feature = e.features![0];
-            const description = `
-  <strong>Window:</strong> ${feature.properties.window}<br>
-  <strong>Road:</strong> ${feature.properties.name}<br>
-  <strong>Type:</strong> ${feature.properties.highwayType}<br>
-  <strong>OSM Way ID:</strong> ${feature.properties.osmWayId}<br>
-  <strong>One-way:</strong> ${feature.properties.isOneway ? 'Yes' : 'No'}<br>
-  <strong>Constraints:</strong> ${feature.properties.isConstrained ? 'Used' : 'Not used'}<br>
-  <strong>Bridge:</strong> ${feature.properties.isBridge ? 'Yes (unconstrained)' : 'No'}<br>
-  ${feature.properties.isPartialSegment ?
-                `<strong>Partial segment:</strong> Using ${feature.properties.interimStartIdx}-${feature.properties.interimEndIdx}`
-                : ''}
-`;
-
-            // Populate the popup and set its coordinates
-            // based on the feature found.
-            popup.setLngLat(coordinates).setHTML(description).addTo(mmap);
-          }
-        });
-
-        mmap.on('mouseleave', layers, () => {
-          currentFeatureCoordinates = "";
-          mmap.getCanvas().style.cursor = '';
-          popup.remove();
-        });
-
-        // Add click handlers for segments
-        mmap.on('click', sourceId, (e) => {
-          if (e.features && e.features.length > 0) {
-            const windowIndex = parseInt(e.features[0].properties.window);
-            const segmentIndex = e.features[0].properties.segmentIndex;
-
-            selectWindow(windowIndex);
-            selectSegment(routeMatchTrace.value!.windowTraces[windowIndex].segments[segmentIndex]);
-
-            // Fly to the clicked segment for better visibility
-            const geometry = e.features[0].geometry;
-            if (geometry.type === 'LineString' || geometry.type === 'MultiLineString') {
-              // Now TypeScript knows this geometry has coordinates
-              const coords = geometry.type === 'LineString'
-                ? geometry.coordinates
-                : geometry.coordinates[0]; // Take first line of multiline
-
-              if (coords && coords.length > 0) {
-                const midpoint = coords[Math.floor(coords.length / 2)];
-                mmap.flyTo({
-                  center: midpoint as LngLatLike,
-                  zoom: 14,
-                  speed: 0.8
-                });
-              }
-            }
-          }
-        });
       }
+    }
+
+    // Add constraint visualization
+    if (window.constraints && window.constraints.length > 0) {
+      // Create a source for constraint connections
+      const constraintSourceId = `window-${windowIdx}-constraints`;
+      const constraintPointsId = `window-${windowIdx}-constraint-points`;
+      layers.push(constraintSourceId, constraintPointsId);
+
+      // Create constraint connections
+      const constraintFeatures = window.constraints.map(constraint => {
+        // Get the point coordinates
+        const point = tripData.value?.points[constraint.pointIdx];
+        if (!point || !point.latlon) return null;
+
+        // Find the segment
+        const segment = window.segments.find(s => s.id === constraint.segmentId);
+        if (!segment) return null;
+
+        // Create a line from point to the segment centroid
+        const segmentCentroid = calculateSegmentCentroid(segment);
+
+        return {
+          type: 'Feature',
+          properties: {
+            pointIdx: constraint.pointIdx,
+            segmentId: constraint.segmentId.toString(),
+            wayId: constraint.wayId.toString(),
+            distance: constraint.distance,
+            description: `Constraint: Point ${constraint.pointIdx} to Segment ${constraint.segmentId} (Way ${constraint.wayId}), Distance: ${constraint.distance.toFixed(2)}m`
+          },
+          geometry: {
+            type: 'LineString',
+            coordinates: [
+              [point.latlon.lon, point.latlon.lat],
+              segmentCentroid
+            ]
+          }
+        } as Feature;
+      }).filter(f => f !== null) as Feature[];
+
+      const constraintPointsFeatures = window.constraints.map(constraint => {
+        const point = tripData.value?.points[constraint.pointIdx];
+        if (!point || !point.latlon) return null;
+
+        return {
+          type: 'Feature',
+          properties: {
+            pointIdx: constraint.pointIdx,
+            segmentId: constraint.segmentId.toString(),
+            wayId: constraint.wayId.toString(),
+            description: `Constrained Point ${constraint.pointIdx}`
+          },
+          geometry: {
+            type: 'Point',
+            coordinates: [point.latlon.lon, point.latlon.lat]
+          }
+        } as Feature;
+      }).filter(f => f !== null) as Feature[];
+
+      // Add constraint connections source and layer
+      mmap.addSource(constraintSourceId, {
+        type: 'geojson',
+        data: {
+          type: 'FeatureCollection',
+          features: constraintFeatures
+        }
+      });
+
+      mmap.addLayer({
+        id: constraintSourceId,
+        type: 'line',
+        source: constraintSourceId,
+        layout: {
+          'line-join': 'round',
+          'line-cap': 'round',
+          'visibility': 'none' // Hidden by default
+        },
+        paint: {
+          'line-color': '#FF00FF',
+          'line-width': 3,
+          'line-dasharray': [2, 1]
+        } as LineLayerSpecification['paint']
+      });
+
+      // Add constraint points source and layer
+      mmap.addSource(constraintPointsId, {
+        type: 'geojson',
+        data: {
+          type: 'FeatureCollection',
+          features: constraintPointsFeatures
+        }
+      });
+
+      mmap.addLayer({
+        id: constraintPointsId,
+        type: 'circle',
+        source: constraintPointsId,
+        layout: {
+          'visibility': 'none' // Hidden by default
+        },
+        paint: {
+          'circle-radius': 8,
+          'circle-color': '#FF00FF',
+          'circle-stroke-width': 2,
+          'circle-stroke-color': '#FFFFFF'
+        }
+      });
+
+      // Popup for constraints
+      mmap.on('click', constraintSourceId, (e) => {
+        if (e.features && e.features.length > 0) {
+          const coordinates = e.lngLat;
+          const feature = e.features[0];
+
+          new Popup()
+            .setLngLat(coordinates)
+            .setHTML(`
+              <div class="constraint-popup">
+                <h4>Constraint Details</h4>
+                <p>${feature.properties.description}</p>
+              </div>
+            `)
+            .addTo(mmap);
+        }
+      });
+    }
+
+    // Add a highlight outline layer that will be visible when a segment is hovered
+    const highlightLayerId = `${sourceId}-highlight`;
+    layers.push(highlightLayerId);
+
+    mmap.addLayer({
+      id: highlightLayerId,
+      type: 'line',
+      source: sourceId,
+      layout: layout,
+      paint: {
+        'line-color': '#FFFFFF',
+        'line-width': 12,
+        'line-opacity': 0 // Start with 0 opacity, we'll update this with setFilter
+      } as LineLayerSpecification['paint'],
+      filter: ['==', ['get', 'uniqueId'], ''] // Start with an empty filter
     });
-  } catch (error) {
-    console.error('Error fetching route match trace:', error);
+
+    // Create a popup, but don't add it to the map yet.
+    const popup = new Popup({
+      closeButton: false,
+      closeOnClick: false
+    });
+
+    // Setup event handlers for segments
+    setupSegmentEvents(mmap, popup);
   }
-});
+
+  // Fit bounds to show all segments
+  fitBoundsToTrip();
+
+  // Select the first window by default
+  if (routeMatchTrace.value.windowTraces.length > 0) {
+    selectWindow(0);
+  }
+};
+
+// Setup mouse events for segments
+const setupSegmentEvents = (mmap: Map, popup: Popup) => {
+  // Make sure to detect marker change for overlapping markers
+  // and use mousemove instead of mouseenter event
+  let currentFeatureCoordinates = "";
+
+  mmap.on('mousemove', layers.filter(id => !id.includes('constraints') && !id.includes('-full') && !id.includes('-highlight')), (e) => {
+    if (!e.features || e.features.length === 0) return;
+
+    const featureCoordinates = e.lngLat.toString();
+    if (currentFeatureCoordinates !== featureCoordinates) {
+      currentFeatureCoordinates = featureCoordinates;
+
+      // Change the cursor style as a UI indicator
+      mmap.getCanvas().style.cursor = 'pointer';
+
+      const coordinates = e.lngLat;
+      const feature = e.features[0];
+      const description = `
+        <strong>Window:</strong> ${feature.properties.window}<br>
+        <strong>Road:</strong> ${feature.properties.name}<br>
+        <strong>Type:</strong> ${feature.properties.highwayType}<br>
+        <strong>OSM Way ID:</strong> ${feature.properties.osmWayId}<br>
+        <strong>One-way:</strong> ${feature.properties.isOneway ? 'Yes' : 'No'}<br>
+        <strong>Constraints:</strong> ${feature.properties.isConstrained ? 'Used' : 'Not used'}<br>
+        <strong>Bridge:</strong> ${feature.properties.isBridge ? 'Yes (unconstrained)' : 'No'}<br>
+        ${feature.properties.isPartialSegment ?
+          `<strong>Partial segment:</strong> Using ${feature.properties.interimStartIdx}-${feature.properties.interimEndIdx}`
+          : ''}
+      `;
+
+      // Populate the popup and set its coordinates
+      popup.setLngLat(coordinates).setHTML(description).addTo(mmap);
+    }
+  });
+
+  mmap.on('mouseleave', layers.filter(id => !id.includes('constraints') && !id.includes('-full') && !id.includes('-highlight')), () => {
+    currentFeatureCoordinates = "";
+    mmap.getCanvas().style.cursor = '';
+    popup.remove();
+  });
+
+  // Add click handlers for segments
+  mmap.on('click', layers.filter(id => !id.includes('constraints') && !id.includes('-full') && !id.includes('-highlight')), (e) => {
+    if (e.features && e.features.length > 0) {
+      const windowIndex = parseInt(e.features[0].properties.window);
+      const segmentIndex = e.features[0].properties.segmentIndex;
+
+      selectWindow(windowIndex);
+      if (routeMatchTrace.value) {
+        selectSegment(routeMatchTrace.value.windowTraces[windowIndex].segments[segmentIndex]);
+      }
+
+      // Fly to the clicked segment for better visibility
+      const geometry = e.features[0].geometry;
+      if (geometry.type === 'LineString' || geometry.type === 'MultiLineString') {
+        // Now TypeScript knows this geometry has coordinates
+        const coords = geometry.type === 'LineString'
+          ? geometry.coordinates
+          : geometry.coordinates[0]; // Take first line of multiline
+
+        if (coords && coords.length > 0) {
+          const midpoint = coords[Math.floor(coords.length / 2)];
+          mmap.flyTo({
+            center: midpoint as LngLatLike,
+            zoom: 14,
+            speed: 0.8
+          });
+        }
+      }
+    }
+  });
+};
+
+// Fit map bounds to show the entire trip
+const fitBoundsToTrip = () => {
+  if (!map.map || !tripData.value?.points?.length) return;
+
+  const bounds = new LngLatBounds();
+
+  // Add all points to bounds
+  for (const point of tripData.value.points) {
+    if (point.latlon) {
+      bounds.extend([point.latlon.lon, point.latlon.lat]);
+    }
+  }
+
+  // Apply padding and fly to bounds
+  if (!bounds.isEmpty()) {
+    map.map.fitBounds(bounds, {
+      padding: 50,
+      maxZoom: 14
+    });
+  }
+};
 
 const goBack = () => {
-  router.push('/');
+  router.push(`/trips/${tripId}`);
 };
 
 const selectWindow = (index: number) => {
   selectedWindowIndex.value = index;
-  selectedWindow.value = routeMatchTrace.value?.windowTraces[index];
+  if (routeMatchTrace.value) {
+    selectedWindow.value = routeMatchTrace.value.windowTraces[index];
+  }
 }
 
 const selectSegment = (segment: RoadSegment) => {
@@ -780,10 +870,12 @@ const toggleConstraints = () => {
   showConstraints.value = !showConstraints.value;
 
   // Toggle visibility of constraint layers
-  routeMatchTrace.value?.windowTraces.forEach((window, idx) => {
+  if (!map.map || !routeMatchTrace.value) return;
+
+  routeMatchTrace.value.windowTraces.forEach((window, idx) => {
     const constraintLayerId = `window-${idx}-constraints`;
-    if (mmap.getLayer(constraintLayerId)) {
-      mmap.setLayoutProperty(
+    if (map.map.getLayer(constraintLayerId)) {
+      map.map.setLayoutProperty(
         constraintLayerId,
         'visibility',
         showConstraints.value ? 'visible' : 'none'
@@ -792,8 +884,8 @@ const toggleConstraints = () => {
 
     // Also toggle constraint point layers
     const constraintPointsId = `window-${idx}-constraint-points`;
-    if (mmap.getLayer(constraintPointsId)) {
-      mmap.setLayoutProperty(
+    if (map.map.getLayer(constraintPointsId)) {
+      map.map.setLayoutProperty(
         constraintPointsId,
         'visibility',
         showConstraints.value ? 'visible' : 'none'
@@ -807,7 +899,7 @@ const toggleDebugInfo = () => {
 }
 
 // Utility function to calculate segment centroid
-const calculateSegmentCentroid = (segment: RoadSegment) => {
+const calculateSegmentCentroid = (segment: RoadSegment): [number, number] => {
   if (!segment.coordinates || segment.coordinates.length === 0) {
     return [0, 0];
   }
@@ -831,7 +923,7 @@ const getWindowStats = (window: WindowTrace) => {
   // Calculate total distance (very rough approximation)
   let totalDistance = 0;
   const totalSegments = window.segments.length;
-  const highwayTypes = new Set();
+  const highwayTypes = new Set<string>();
 
   window.segments.forEach(segment => {
     highwayTypes.add(segment.highwayType);
@@ -867,10 +959,12 @@ const getWindowStats = (window: WindowTrace) => {
 
 // Get colors for the window selector
 const getWindowColor = (index: number) => {
-  const window = routeMatchTrace.value!.windowTraces[index]!;
+  if (!routeMatchTrace.value) return 'hsl(200, 50%, 50%)';
+
+  const window = routeMatchTrace.value.windowTraces[index];
 
   // Base color calculated from index
-  const hueStep = 255 / routeMatchTrace.value!.windowTraces.length;
+  const hueStep = 255 / routeMatchTrace.value.windowTraces.length;
   const baseHue = Math.round(hueStep * index);
 
   // Modify saturation based on constraint usage
@@ -889,48 +983,74 @@ const getWindowClass = (window: WindowTrace) => {
   return 'bg-blue-500';
 };
 
+// Debug OSM around a specific point
 const debugOSMAt = async (point: Point) => {
-  const m = await $api.oSMNetworkAroundPoint(point.latlon!);
-  const gj = JSON.parse(m.value);
-  debugGeojsonSource.value = gj;
+  try {
+    const response = await api.oSMNetworkAroundPoint(point.latlon!);
+    debugGeojsonSource.value = JSON.parse(response.value);
+  } catch (error) {
+    console.error('Error fetching OSM data around point:', error);
+  }
 }
 
+// Debug a failed window pathfinding
 const debugFailedWindow = async () => {
   if (!selectedWindow.value || !selectedWindow.value.bridge) return;
 
-  // Call the backend to get debugging information for this window
-  const failedWindowData = await $api.debugWindowPathFinding({
-    tripIndex: tripIndex,
-    windowIndex: selectedWindowIndex.value!,
-    startPoint: selectedWindow.value.start,
-    endPoint: selectedWindow.value.end
-  });
+  try {
+    // Call the backend to get debugging information for this window
+    const response = await fetch(`/api/debug-window-pathfinding`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        tripId: tripId,
+        windowIndex: selectedWindowIndex.value,
+        startPoint: selectedWindow.value.start,
+        endPoint: selectedWindow.value.end
+      })
+    });
 
-  // Update the state with the debugging info
-  pathDebugInfo.value = failedWindowData;
+    const data = await response.json();
 
-  // Log for debugging
-  console.log("Path debug info:", pathDebugInfo.value);
+    // Update the state with the debugging info
+    pathDebugInfo.value = data;
+  } catch (error) {
+    console.error('Error debugging failed window:', error);
+  }
 };
 
-// Add this method to visualize connectivity between segments
+// Visualize connectivity between segments
 const visualizeConnectivity = async () => {
   if (!selectedWindow.value || !pathDebugInfo.value) return;
 
-  // Get connectivity visualization
-  const connectivityData = await $api.analyzeSegmentConnectivity({
-    tripIndex: tripIndex,
-    startPointIndex: selectedWindow.value.start,
-    endPointIndex: selectedWindow.value.end
-  });
+  try {
+    // Get connectivity visualization using the proper API pattern
+    const response = await fetch(`/api/analyze-segment-connectivity`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        tripId: tripId,
+        startPointIndex: selectedWindow.value.start,
+        endPointIndex: selectedWindow.value.end
+      })
+    });
 
-  // Update the debug GeoJSON source to show the connectivity
-  debugGeojsonSource.value = JSON.parse(connectivityData.value);
+    const data = await response.json();
+
+    // Update the debug GeoJSON source to show the connectivity
+    debugGeojsonSource.value = data;
+  } catch (error) {
+    console.error('Error visualizing connectivity:', error);
+  }
 };
 
 // Helper methods
 const getAttemptClass = (attempt: PathfindingAttempt) => {
-  switch (attempt.result!.type) {
+  switch (attempt.result?.type) {
     case PathfindingResult_ResultType.SUCCESS: return 'bg-green-100';
     case PathfindingResult_ResultType.TOO_FAR: return 'bg-yellow-100';
     case PathfindingResult_ResultType.NO_CONNECTION: return 'bg-red-100';
@@ -957,25 +1077,21 @@ const getSegmentLabel = (segmentId: number) => {
   return `Seg ${segmentId}`;
 };
 
-// Convert DateTime object to JavaScript Date
-const dateTimeToJsDate = (dateTime: DateTime) => {
-  if (!dateTime) return null;
-
-  // Extract datetime components
-  const { year, month, day, hours, minutes, seconds, nanos } = dateTime;
-
-  // JavaScript months are 0-based (0-11), while DateTime months are 1-based (1-12)
-  return new Date(year, month - 1, day, hours, minutes, seconds, nanos / 1000000);
-};
-
 // Format DateTime to readable string
 const formatDateTime = (dateTime: DateTime) => {
   if (!dateTime) return '';
 
-  const jsDate = dateTimeToJsDate(dateTime);
-  if (!jsDate) return '';
+  try {
+    // Extract datetime components
+    const { year, month, day, hours, minutes, seconds } = dateTime;
 
-  return jsDate.toLocaleString();
+    // JavaScript months are 0-based (0-11), while DateTime months are 1-based (1-12)
+    const jsDate = new Date(year, month - 1, day, hours, minutes, seconds);
+    return jsDate.toLocaleString();
+  } catch (e) {
+    console.error('Error formatting date time:', e);
+    return '';
+  }
 };
 
 </script>
@@ -986,5 +1102,22 @@ body,
 div#__nuxt {
   height: 100%;
   width: 100%;
+}
+
+.window-button {
+  transition: all 0.2s ease;
+}
+
+.window-button:hover {
+  transform: scale(1.1);
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.5);
+}
+
+.segment-item {
+  transition: all 0.2s ease;
+}
+
+.point-marker {
+  transition: transform 0.2s ease;
 }
 </style>

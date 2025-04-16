@@ -5,8 +5,7 @@
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { Message, proto3, protoInt64 } from "@bufbuild/protobuf";
-import { DateTime, Point, UUID } from "./common_pb.js";
-import { RoadSegment } from "./chronotopia_pb.js";
+import { DateTime, Point, RoadSegment, UUID } from "./common_pb.js";
 import { ActivityEvent, VisitEvent } from "./ingest_pb.js";
 
 /**

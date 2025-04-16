@@ -49,7 +49,7 @@ impl TripsService {
             end_time: Some(DateTime::from(&db_trip.end_time)),
             distance_meters: db_trip.distance_meters,
             points,
-            processed: db_trip.processed,
+            processed: true,
             matched_segments: Vec::new(),
             geojson: db_trip.geo_json.unwrap_or_default(),
             visits: Vec::new(),

@@ -18,10 +18,12 @@
     "@vueuse/core": "^13.1.0",
     "eslint": "^9.24.0",
     "geojson": "^0.5.0",
-    "maplibre-gl": "^5.3.0",
+    "maplibre-gl": "^5.3.1",
     "mitt": "^3.0.1",
     "nuxt": "^3.16.2",
     "nuxt-maplibre": "1.1.1",
+    "nuxt-workers": "0.1.0",
+    "streets-gl-lib": "link:streets-gl-lib",
     "typescript": "^5.8.3",
     "vue": "^3.5.13",
     "vue-router": "^4.5.0",
@@ -34,7 +36,8 @@
     "@connectrpc/connect": "1.5.0",
     "@connectrpc/connect-node": "1.5.0",
     "@connectrpc/connect-web": "1.5.0",
-    "@connectrpc/protoc-gen-connect-es": "1.5.0"
+    "@connectrpc/protoc-gen-connect-es": "1.5.0",
+    "vite-plugin-wasm": "^3.4.1"
   },
   "trustedDependencies": [
     "@parcel/watcher"

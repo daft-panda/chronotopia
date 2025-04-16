@@ -37,22 +37,88 @@
                 </div>
             </div>
 
-            <!-- Trip map -->
+            <!-- Trip map with visualization -->
             <div class="h-96 bg-gray-200 relative">
-                <div v-if="trip.geojson" class="absolute inset-0">
-                    <!-- In a real app, render the GeoJSON with a map library -->
-                    <div class="w-full h-full flex flex-col items-center justify-center bg-blue-50">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 text-blue-500" fill="none"
-                            viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
-                        </svg>
-                        <span class="text-blue-500 mt-2">Trip map would render here</span>
-                    </div>
+                <div v-if="mapData || parsedGeoJson" class="absolute inset-0">
+                    <ClientOnly>
+                        <MglMap map-style="https://api.maptiler.com/maps/streets/style.json?key=Ic6Mr5qetb5kn90hyEzO"
+                            :zoom="10" @load="onMapLoaded">
+                            <MglFullscreenControl position="top-right" />
+                            <MglNavigationControl position="top-right" />
+                            <MglGeolocateControl position="top-right" />
+
+                            <!-- Regular GeoJSON visualization -->
+                            <MglGeoJsonSource v-if="parsedGeoJson" source-id="trip-route" :data="parsedGeoJson">
+                                <MglLineLayer layer-id="trip-route-line" source="trip-route" :paint="{
+                                    'line-color': '#4F46E5',
+                                    'line-width': 4
+                                }" />
+                            </MglGeoJsonSource>
+
+                            <!-- Display trip points as markers -->
+                            <MglMarker v-for="(point, index) in trip.points" :key="`point-${index}`"
+                                :coordinates="[point.latlon!.lon, point.latlon!.lat]">
+                                <template #marker>
+                                    <div
+                                        class="point-marker w-3 h-3 rounded-full bg-blue-500 border-2 border-white shadow-md" />
+                                </template>
+                                <MglPopup>
+                                    <div class="p-2">
+                                        <h3 class="font-bold">Point {{ index }}</h3>
+                                        <p class="text-sm">{{ point.latlon?.lat.toFixed(6) }}, {{
+                                            point.latlon?.lon.toFixed(6) }}</p>
+                                        <p v-if="point.dateTime" class="text-sm text-gray-600">
+                                            {{ formatTime(point.dateTime) }}
+                                        </p>
+                                    </div>
+                                </MglPopup>
+                            </MglMarker>
+
+                            <!-- Window Traces Visualization (if RouteMatchTrace is available) -->
+                            <template v-if="trip.routeMatchTrace">
+                                <template v-for="(window, windowIdx) in trip.routeMatchTrace.windowTraces"
+                                    :key="`window-${windowIdx}`">
+                                    <MglGeoJsonSource :source-id="`window-${windowIdx}`" :data="parsedGeoJson">
+                                        <MglLineLayer :layer-id="`window-${windowIdx}`"
+                                            :source-id="`window-${windowIdx}`" :paint="{
+                                                'line-color': '#00FF00',
+                                                'line-width': 5,
+                                                'line-dasharray': window.bridge ? [2, 1] : [1, 0],
+                                                'line-opacity': 0.8
+                                            }" />
+                                    </MglGeoJsonSource>
+                                </template>
+                            </template>
+                        </MglMap>
+                    </ClientOnly>
                 </div>
                 <div v-else class="absolute inset-0 flex items-center justify-center text-gray-500">
                     <span v-if="trip.processed">No Map Data</span>
                     <span v-else>Processing</span>
+                </div>
+            </div>
+
+            <!-- Map controls (if RouteMatchTrace is available) -->
+            <div v-if="trip.routeMatchTrace" class="bg-gray-100 p-3 flex justify-between items-center">
+                <button class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition"
+                    @click="viewDetailedMapMatching">
+                    View Detailed Map Matching Analysis
+                </button>
+
+                <!-- Simple legend -->
+                <div class="flex items-center gap-4">
+                    <div class="flex items-center">
+                        <div class="w-6 h-2 bg-green-500 mr-2" />
+                        <span class="text-xs text-gray-700">Constrained</span>
+                    </div>
+                    <div class="flex items-center">
+                        <div class="w-6 h-2 bg-blue-500 mr-2" />
+                        <span class="text-xs text-gray-700">Unconstrained</span>
+                    </div>
+                    <div class="flex items-center">
+                        <div class="w-6 h-2 bg-red-500 mr-2" />
+                        <span class="text-xs text-gray-700">Bridge</span>
+                    </div>
                 </div>
             </div>
 
@@ -69,7 +135,7 @@
                         <div class="text-xs text-gray-500">Distance</div>
                     </div>
                     <div class="border rounded-lg p-4 text-center">
-                        <div class="text-lg font-semibold">{{ trip.points }}</div>
+                        <div class="text-lg font-semibold">{{ trip.points?.length || 0 }}</div>
                         <div class="text-xs text-gray-500">Data Points</div>
                     </div>
                 </div>
@@ -148,11 +214,19 @@
 import { ActivityEvent_ActivityType } from '~/model/ingest_pb';
 import type { Trip } from '~/model/trips_pb';
 import { formatDate, formatDistance, formatDuration, formatDurationFromVisit, formatTime } from '~/utils/formatting';
+import { MglMap, MglNavigationControl, MglFullscreenControl, MglGeolocateControl, MglGeoJsonSource, MglLineLayer, MglMarker, MglPopup } from '#components';
+import { LngLatBounds, type Map as MaplibreMap } from 'maplibre-gl';
+import type { GeoJSON } from 'geojson';
 
 const { tripsApi } = useApi();
 const router = useRouter();
 const route = useRoute();
 const tripId = route.params.id;
+const map = useMglMap();
+const mapLoaded = ref(false);
+const parsedGeoJson = ref<GeoJSON | null>(null);
+const mapData = ref<any>(null);
+const mapInstance = ref<MaplibreMap | null>(null);
 
 // Fetch trip details
 const { data: trip, pending, error } = useAsyncData(
@@ -161,9 +235,18 @@ const { data: trip, pending, error } = useAsyncData(
         try {
             const response = await tripsApi.getTripDetails({
                 tripId: {
-                    value: tripId! as string
+                    value: tripId as string
                 }
             });
+
+            // Try to parse the GeoJSON if available
+            if (response.trip?.geojson) {
+                try {
+                    parsedGeoJson.value = JSON.parse(response.trip.geojson);
+                } catch (err) {
+                    console.error('Error parsing GeoJSON:', err);
+                }
+            }
 
             return response.trip;
         } catch (err) {
@@ -172,6 +255,42 @@ const { data: trip, pending, error } = useAsyncData(
         }
     }
 );
+
+// Fit map to bounds of the trip points
+const fitMapToBounds = () => {
+    if (!mapInstance.value || !trip.value?.points?.length) return;
+
+    // Create a bounds object
+    const bounds = new LngLatBounds();
+
+    // Add all points to the bounds
+    for (const point of trip.value.points) {
+        if (point.latlon) {
+            bounds.extend([point.latlon.lon, point.latlon.lat]);
+        }
+    }
+
+    // Only fit bounds if we have valid coordinates
+    if (!bounds.isEmpty()) {
+        mapInstance.value.fitBounds(bounds, {
+            padding: 50,
+            maxZoom: 15
+        });
+    }
+};
+
+watch(() => map.isLoaded, (_isLoaded) => {
+    mapInstance.value = map.map;
+    mapLoaded.value = true;
+
+    // Fit bounds to the trip points if available
+    fitMapToBounds();
+}, { immediate: true });
+
+// Navigate to the detailed map matching view
+const viewDetailedMapMatching = () => {
+    router.push(`/analyze-mapmatching/${tripId}`);
+};
 
 // Generate a title for the trip if no label exists
 const formatTripTitle = (trip: Trip) => {
@@ -192,8 +311,19 @@ const formatTripTitle = (trip: Trip) => {
             day: 'numeric',
             year: 'numeric'
         })}`;
-    } catch (e: any) {
+    } catch (_e: any) {
         return 'Untitled Trip';
     }
 };
+
 </script>
+
+<style>
+.point-marker {
+    transition: all 0.2s;
+}
+
+.point-marker:hover {
+    transform: scale(1.5);
+}
+</style>

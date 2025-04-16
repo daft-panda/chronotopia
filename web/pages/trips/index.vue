@@ -132,7 +132,7 @@ const { data, pending, error, refresh } = useAsyncData(
     async () => {
         try {
             const response = await tripsApi.getTripsForUser({
-                limit: 50 // Limit to 50 most recent trips
+                limit: 100
             });
 
             return response.trips?.trips || [];
@@ -165,7 +165,8 @@ const formatTripTitle = (trip: Trip) => {
             day: 'numeric',
             year: 'numeric'
         })}`;
-    } catch (e: any) {
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    } catch (_e: any) {
         return 'Untitled Trip';
     }
 };

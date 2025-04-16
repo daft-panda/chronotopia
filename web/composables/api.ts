@@ -6,10 +6,10 @@ import {
 } from "@connectrpc/connect";
 import { createGrpcWebTransport } from "@connectrpc/connect-web";
 import type { GrpcTransportOptions } from "@connectrpc/connect-node";
-import { Chronotopia } from "~/model/chronotopia_connect";
-import { UserManagement } from "~/model/user_management_connect";
-import { Ingest } from "~/model/ingest_connect";
-import { Trips } from "~/model/trips_connect";
+import { Chronotopia } from "../model/chronotopia_connect";
+import { Ingest } from "../model/ingest_connect";
+import { Trips } from "../model/trips_connect";
+import { UserManagement } from "../model/user_management_connect";
 
 // WATCH OUT
 // Even though recent browsers should support it, loading the web GRPC transport at runtime
