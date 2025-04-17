@@ -22,7 +22,7 @@ pub(crate) fn calculate_static_transition_cost(
 
     // Continuity bonus for staying on the same road
     let continuity_factor = if from_segment.osm_way_id == to_segment.osm_way_id {
-        0.7 // 30% discount
+        0.9 // 10% discount
     } else {
         1.0
     };
@@ -42,6 +42,7 @@ pub(crate) fn calculate_dynamic_transition_cost(
     from_segment: &WaySegment,
     to_segment: &WaySegment,
     from_segment_entry_idx: usize,
+    from_segment_exit_idx: usize,
     gps_points: Option<&[Point<f64>]>,
 ) -> (f64, f64) {
     // Early validation
@@ -51,44 +52,7 @@ pub(crate) fn calculate_dynamic_transition_cost(
 
     let static_cost = calculate_static_transition_cost(from_segment, to_segment);
 
-    // Get the connection node ID
-    let connection_node_id = {
-        // Find common node IDs between segments
-        let shared_node_ids: Vec<u64> = from_segment
-            .nodes
-            .iter()
-            .filter(|n| to_segment.nodes.contains(n))
-            .cloned()
-            .collect();
-
-        if shared_node_ids.is_empty() {
-            // No shared nodes, cannot establish connection
-            panic!("No shared nodes");
-        } else {
-            // Prefer endpoint connections if available
-            let from_last_id = *from_segment.nodes.last().unwrap_or(&0);
-            let to_first_id = *to_segment.nodes.first().unwrap_or(&0);
-
-            if shared_node_ids.contains(&from_last_id) && shared_node_ids.contains(&to_first_id) {
-                from_last_id // Optimal end-to-start connection
-            } else {
-                // Just use any shared node ID
-                shared_node_ids[0]
-            }
-        }
-    };
-
-    // Find array indices of the connection node ID in both segments
-    let from_connection_idx = match from_segment
-        .nodes
-        .iter()
-        .position(|&n| n == connection_node_id)
-    {
-        Some(idx) => idx,
-        None => panic!("Connecting node not found"),
-    };
-
-    if from_segment.is_oneway && from_segment_entry_idx > from_connection_idx {
+    if from_segment.is_oneway && from_segment_entry_idx > from_segment_exit_idx {
         // We are entering past the connection which is invalid
         panic!("Entering past the connection point");
     }
@@ -104,7 +68,7 @@ pub(crate) fn calculate_dynamic_transition_cost(
     // 2. Traversal through a segment from one node to another
 
     // Calculate distance along from_segment between entry and exit points
-    let distance = if from_connection_idx == from_segment_entry_idx {
+    let distance = if from_segment_exit_idx == from_segment_entry_idx {
         // No traversal (enter and exit at same point)
         0. // Minimal cost
     } else {
@@ -112,10 +76,10 @@ pub(crate) fn calculate_dynamic_transition_cost(
         let mut distance = 0.0;
 
         // Make sure indices are properly ordered for iteration
-        let (start_idx, end_idx) = if from_segment_entry_idx <= from_connection_idx {
-            (from_segment_entry_idx, from_connection_idx)
+        let (start_idx, end_idx) = if from_segment_entry_idx <= from_segment_exit_idx {
+            (from_segment_entry_idx, from_segment_exit_idx)
         } else {
-            (from_connection_idx, from_segment_entry_idx)
+            (from_segment_exit_idx, from_segment_entry_idx)
         };
 
         // Walk along the segment coordinates and sum distances
@@ -135,10 +99,10 @@ pub(crate) fn calculate_dynamic_transition_cost(
     };
 
     // Normalize distance to a reasonable cost value
-    let distance_cost = (distance / 100.0).max(0.1);
+    let distance_cost = (distance / 500.0).max(0.1) + 1.0;
 
     // Calculate base cost combines all factors
-    let mut base_cost = (distance_cost * static_cost) + 1.0;
+    let mut base_cost = distance_cost * static_cost;
 
     // Check GPS proximity if points are provided
     if let Some(points) = gps_points {

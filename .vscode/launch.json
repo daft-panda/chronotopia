@@ -3,6 +3,21 @@
         {
             "type": "lldb",
             "request": "launch",
+            "name": "Debug Chronotopia backend",
+            "cargo": {
+                "args": [
+                    "build"
+                ],
+                "filter": {
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
             "args": [],
             "cwd": "${workspaceFolder:chronotopia}/app/ios/Runner",
             "name": "Debug ChronoTopia (app/ios/Runner)",

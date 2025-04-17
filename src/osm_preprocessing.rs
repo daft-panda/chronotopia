@@ -1632,9 +1632,6 @@ impl OSMProcessor {
                         let node_id = common_nodes
                             .first()
                             .expect("No common nodes between connected segments");
-                        if common_nodes.len() > 1 {
-                            warn!("Only the first common node is considered");
-                        }
 
                         let segment_connection_node_idx =
                             segment.nodes.iter().position(|&n| n == *node_id).unwrap();
@@ -1788,13 +1785,13 @@ impl OSMProcessor {
         let mut add_from_other_to_segment = true;
 
         if segment.is_oneway && other_segment.is_oneway {
-            if segment_connection_node_idx == other_segment_last_node_idx {
+            if other_segment_connection_node_idx == other_segment_last_node_idx {
                 // invalid - we cannot connect to the end of the one way other segment
                 add_from_segment_to_other = false;
-                add_from_other_to_segment = false;
-            } else if other_segment_connection_node_idx == segment_last_node_idx {
+            }
+
+            if segment_connection_node_idx == segment_last_node_idx {
                 // invalid - we cannot connect to the end of the one way segment one
-                add_from_segment_to_other = false;
                 add_from_other_to_segment = false;
             }
         }

@@ -607,7 +607,7 @@ impl RouteMatcher {
         // Step 4: Process constrained points
         let mut constrained_candidates: HashMap<usize, Vec<u64>> = HashMap::new();
 
-        if enforce_constraints {
+        if enforce_constraints && !constrained_points.is_empty() {
             for &(point_idx, segment_id) in constrained_points {
                 if point_idx >= points.len() {
                     continue; // Skip invalid points
@@ -633,143 +633,16 @@ impl RouteMatcher {
         }
 
         // Step 5: Find paths between consecutive points or use sliding window approach
-        let matched_segments = if enforce_constraints {
+        let matched_segments = 
             // Use sliding window approach for route matching
-            self.build_route_with_sliding_window(job)?
-        } else {
-            // Use direct point-to-point approach for route planning
-            self.build_direct_route(job, &all_candidates)?
-        };
+            self.build_route_with_sliding_window(job)?;
+        
 
         info!(
             "Optimal route found in {:.2?} with {} segments",
             start_time.elapsed(),
             matched_segments.len()
         );
-
-        Ok(matched_segments)
-    }
-
-    /// Build a direct route between points (for route planning)
-    fn build_direct_route(
-        &mut self,
-        job: &RouteMatchJob,
-        all_candidates: &[Vec<SegmentCandidate>],
-    ) -> Result<Vec<MatchedWaySegment>> {
-        let points = &job.gps_points;
-        let timestamps = &job.timestamps;
-        let honor_timestamps = points.len() == timestamps.len();
-        let mut matched_segments: Vec<MatchedWaySegment> = Vec::new();
-        let mut used_segments = HashSet::new();
-
-        for i in 0..points.len() - 1 {
-            let from_candidates = &all_candidates[i];
-            let to_candidates = &all_candidates[i + 1];
-
-            if from_candidates.is_empty() || to_candidates.is_empty() {
-                return Err(anyhow!("Missing candidates for points {} or {}", i, i + 1));
-            }
-
-            // Try multiple candidates to find a valid path
-            let mut path_found = false;
-
-            // Try at most 3 candidates for each endpoint to limit processing time
-            for from_candidate in from_candidates.iter().take(3) {
-                if path_found {
-                    break;
-                }
-
-                for to_candidate in to_candidates.iter().take(3) {
-                    // Skip if same segment for multi-point routes
-                    if from_candidate.segment.id == to_candidate.segment.id && points.len() > 2 {
-                        continue;
-                    }
-
-                    // Calculate max distance
-                    let max_distance = if honor_timestamps && i < timestamps.len() - 1 {
-                        // Time-based approach
-                        let time_diff = (timestamps[i + 1] - timestamps[i]).num_seconds() as f64;
-                        if time_diff > 0.0 {
-                            // Using high average speed (40 m/s = 144 km/h)
-                            (time_diff * 40.0).max(5000.0)
-                        } else {
-                            5000.0 // Default 5km
-                        }
-                    } else {
-                        // Distance-based approach
-                        let direct_distance = Haversine.distance(points[i], points[i + 1]);
-                        (direct_distance * 2.5).max(5000.0) // At least 5km
-                    };
-
-                    // Try to find a path - now getting MatchedWaySegment objects directly
-                    match self.find_path_with_distance_limit(
-                        job,
-                        from_candidate.segment.id,
-                        from_candidate.closest_node_idx,
-                        to_candidate.segment.id,
-                        &used_segments,
-                        max_distance,
-                    ) {
-                        Ok((_cost, path_segments)) => {
-                            // Add new matched segments to our route
-                            for segment in path_segments {
-                                if !used_segments.contains(&segment.segment.id) {
-                                    used_segments.insert(segment.segment.id);
-                                    matched_segments.push(segment);
-                                }
-                            }
-                            path_found = true;
-                            break;
-                        }
-                        Err(_) => {
-                            // Try next candidate pair
-                            continue;
-                        }
-                    }
-                }
-            }
-
-            // If no path found with any candidate pair, try without used_segments restriction
-            if !path_found {
-                let from_candidate = &from_candidates[0];
-                let to_candidate = &to_candidates[0];
-
-                let direct_distance = Haversine.distance(points[i], points[i + 1]);
-                let max_distance = (direct_distance * 3.0).max(5000.0); // More generous limit
-
-                match self.find_path_with_distance_limit(
-                    job,
-                    from_candidate.segment.id,
-                    from_candidate.closest_node_idx,
-                    to_candidate.segment.id,
-                    &HashSet::new(), // Empty set - ignore used segments
-                    max_distance,
-                ) {
-                    Ok((_cost, path_segments)) => {
-                        // Add new matched segments to our route
-                        for matched in path_segments {
-                            if !used_segments.contains(&matched.segment.id) {
-                                used_segments.insert(matched.segment.id);
-                                matched_segments.push(matched);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        // Last attempt failed
-                        return Err(anyhow!(
-                            "Failed to find path between points {} and {}: {}",
-                            i,
-                            i + 1,
-                            e
-                        ));
-                    }
-                }
-            }
-        }
-
-        if matched_segments.is_empty() {
-            return Err(anyhow!("Failed to build a valid route"));
-        }
 
         Ok(matched_segments)
     }
@@ -1635,6 +1508,7 @@ impl RouteMatcher {
 
                 let projection = match closest {
                     Closest::SinglePoint(p) => p,
+                    Closest::Intersection(p) => p,
                     _ => matched_segment.centroid(), // Use centroid as fallback
                 };
 
@@ -1678,6 +1552,7 @@ impl RouteMatcher {
 
             let projection = match closest {
                 Closest::SinglePoint(p) => p,
+                Closest::Intersection(p) => p,
                 _ => point, // Fallback
             };
 
@@ -1835,7 +1710,7 @@ impl RouteMatcher {
                             best_score = score;
                         }
                     }
-                    Err(_) => continue,
+                    Err(e) => debug!("{:?}", e),
                 }
             }
         }
@@ -2011,6 +1886,7 @@ impl RouteMatcher {
                 let closest = line.closest_point(&point);
                 let projection = match closest {
                     Closest::SinglePoint(p) => p,
+                    Closest::Intersection(p) => p,
                     _ => point, // Fallback
                 };
 
@@ -2274,6 +2150,7 @@ impl RouteMatcher {
 
                         let distance = match projection {
                             Closest::SinglePoint(p) => Haversine.distance(*point, p),
+                            Closest::Intersection(p) => Haversine.distance(*point, p),
                             _ => continue,
                         };
 
@@ -2321,6 +2198,7 @@ impl RouteMatcher {
 
             let distance = match closest {
                 Closest::SinglePoint(p) => Haversine.distance(*overlap_point, p),
+                Closest::Intersection(p) => Haversine.distance(*overlap_point, p),
                 _ => continue,
             };
 
@@ -2381,6 +2259,7 @@ impl RouteMatcher {
 
             let distance = match closest {
                 Closest::SinglePoint(p) => Haversine.distance(*overlap_point, p),
+                Closest::Intersection(p) => Haversine.distance(*overlap_point, p),
                 _ => continue,
             };
 
@@ -2413,6 +2292,9 @@ impl RouteMatcher {
 
                         let distance = match closest {
                             Closest::SinglePoint(p) => Haversine.distance(*second_to_last_point, p),
+                            Closest::Intersection(p) => {
+                                Haversine.distance(*second_to_last_point, p)
+                            }
                             _ => continue,
                         };
 
@@ -2507,6 +2389,9 @@ impl RouteMatcher {
 
         // Initialize for starting segment
         segment_entry_idx.insert(from, entry_idx);
+        let from_segment = segment_map
+        .get(&from)
+        .ok_or_else(|| anyhow!("Origin segment not found"))?;
 
         // Get destination coordinates for heuristic
         let to_segment = segment_map
@@ -2567,34 +2452,32 @@ impl RouteMatcher {
                     }
                 }
 
-                // Add the starting segment
-                if let Some(segment) = segment_map.get(&from) {
-                    let entry = Some(entry_idx);
+                // Add the starting segment            
+                let entry = Some(entry_idx);
 
-                    // For the starting segment, find the exit node index correctly
-                    let exit = if let Some(next_node) = matched_path.last().map(|m| m.segment.id) {
-                        // If we have connection node information for this segment pair
-                        if let Some(&connection_node) = connection_node_ids.get(&(from, next_node))
-                        {
-                            // Find the position of the connection node in this segment
-                            segment
-                                .nodes
-                                .iter()
-                                .position(|&n| n == connection_node)
-                                .map(|pos| pos)
-                        } else {
-                            // Fallback - use existing exit index if set, or calculate based on destination
-                            segment_exit_idx.get(&from).copied()
-                        }
+                // For the starting segment, find the exit node index correctly
+                let exit = if let Some(next_node) = matched_path.last().map(|m| m.segment.id) {
+                    // If we have connection node information for this segment pair
+                    if let Some(&connection_node) = connection_node_ids.get(&(from, next_node))
+                    {
+                        // Find the position of the connection node in this segment
+                        from_segment
+                            .nodes
+                            .iter()
+                            .position(|&n| n == connection_node)
+                            .map(|pos| pos)
                     } else {
-                        // No next segment, use entry as exit (zero-length traversal)
-                        Some(entry_idx)
-                    };
+                        // Fallback - use existing exit index if set, or calculate based on destination
+                        segment_exit_idx.get(&from).copied()
+                    }
+                } else {
+                    // No next segment, use entry as exit (zero-length traversal)
+                    Some(entry_idx)
+                };
 
-                    let matched = MatchedWaySegment::new(segment.clone(), entry, exit);
-                    matched_path.push(matched);
-                }
-
+                let matched = MatchedWaySegment::new(from_segment.clone(), entry, exit);
+                matched_path.push(matched);
+                
                 // Reverse to get correct order
                 matched_path.reverse();
 
@@ -2644,13 +2527,15 @@ impl RouteMatcher {
                     .cloned()
                     .collect();
 
-                if !common_nodes.is_empty() {
-                    if common_nodes.len() > 1 {
-                        warn!("Currently only the first common node between edges is considered");
-                    }
-
-                    let common_node = common_nodes[0];
-
+                if common_nodes.is_empty(){
+                    return Err(anyhow!(
+                        "Graph is invalid, no common node between neighboring segments {} and {}",
+                        current,
+                        neighbor
+                    ));
+                }
+                
+                for common_node in common_nodes {
                     // Get exit position in current segment (node index)
                     let current_exit_idx = current_segment
                         .nodes
@@ -2682,6 +2567,7 @@ impl RouteMatcher {
                         current_segment,
                         neighbor_segment,
                         current_entry_idx,
+                        current_exit_idx,
                         Some(&relevant_points),
                     );
 
@@ -2711,28 +2597,39 @@ impl RouteMatcher {
                         segment_entry_idx.insert(neighbor, neighbor_entry_idx);
 
                         // Calculate heuristic
-                        let neighbor_point = neighbor_segment.centroid();
-                        let h_score = Haversine.distance(neighbor_point, goal_point) / 1000.0; // km
+                        let neighbor_endpoint: Point<f64> = if neighbor_segment.is_oneway {
+                            neighbor_segment.coordinates.last().unwrap().clone().into()
+                        } else {
+                            // Find endpoint closer to destination
+                            let first: Point<f64> =
+                                neighbor_segment.coordinates.first().unwrap().clone().into();
+                            let last: Point<f64> =
+                                neighbor_segment.coordinates.last().unwrap().clone().into();
+
+                            if Haversine.distance(first, goal_point)
+                                < Haversine.distance(last, goal_point)
+                            {
+                                first
+                            } else {
+                                last
+                            }
+                        };
+
+                        let h_score = Haversine.distance(neighbor_endpoint, goal_point) / 1000.0;
                         let f_score = new_g_score + h_score;
 
                         // Add to open set
                         open_set.push(OrderedFloat(-f_score), neighbor); // Negative because we want min heap
                     }
-                } else {
-                    return Err(anyhow!(
-                        "Graph is invalid, no common node between neighboring segments {} and {}",
-                        current,
-                        neighbor
-                    ));
                 }
             }
         }
 
         // No path found
         Err(anyhow!(
-            "No path found between segments {} and {} within distance limit",
-            from,
-            to
+            "No path found between OSM way {} and {} within distance limit",
+            from_segment.osm_way_id,
+            to_segment.osm_way_id
         ))
     }
 
@@ -3063,7 +2960,6 @@ impl RouteMatcher {
             let segments = self.tile_loader.get_all_segments_from_tile(tile_id)?;
 
             for segment in segments {
-                // Use unified projection function with direction validity
                 if let Some((projection, distance, closest_node_idx)) =
                     self.project_point_to_segment(point, &segment)
                 {
@@ -3142,6 +3038,7 @@ impl RouteMatcher {
         // Get closest point
         let projection = match line.closest_point(&point) {
             Closest::SinglePoint(p) => p,
+            Closest::Intersection(p) => p,
             _ => segment.centroid(), // Fallback for rare cases
         };
 

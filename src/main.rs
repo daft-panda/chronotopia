@@ -54,13 +54,13 @@ static ROUTE_MATCHER_CONFIG: LazyLock<RouteMatcherConfig> = LazyLock::new(|| Rou
     osm_pbf_path: "../sudeste-latest.osm.pbf".to_string(),
     tile_cache_dir: "sample/tiles".to_string(),
     max_cached_tiles: 500,
-    max_matching_distance: 150.0,
+    max_matching_distance: 50.0,
     tile_config: TileConfig {
         base_tile_size: 1.0,
         min_tile_density: 5000,
         max_split_depth: 2,
     },
-    max_candidates_per_point: 10,
+    max_candidates_per_point: 5,
     max_tiles_per_depth: 100,
     split_windows_on_failure: false,
 });
