@@ -278,6 +278,98 @@ export class Points extends Message<Points> {
 }
 
 /**
+ * @generated from message chronotopia.PlanRouteRequest
+ */
+export class PlanRouteRequest extends Message<PlanRouteRequest> {
+  /**
+   * @generated from field: chronotopia.LatLon start_point = 1;
+   */
+  startPoint?: LatLon;
+
+  /**
+   * @generated from field: chronotopia.LatLon end_point = 2;
+   */
+  endPoint?: LatLon;
+
+  /**
+   * @generated from field: repeated chronotopia.LatLon via_points = 3;
+   */
+  viaPoints: LatLon[] = [];
+
+  constructor(data?: PartialMessage<PlanRouteRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chronotopia.PlanRouteRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "start_point", kind: "message", T: LatLon },
+    { no: 2, name: "end_point", kind: "message", T: LatLon },
+    { no: 3, name: "via_points", kind: "message", T: LatLon, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): PlanRouteRequest {
+    return new PlanRouteRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): PlanRouteRequest {
+    return new PlanRouteRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): PlanRouteRequest {
+    return new PlanRouteRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: PlanRouteRequest | PlainMessage<PlanRouteRequest> | undefined, b: PlanRouteRequest | PlainMessage<PlanRouteRequest> | undefined): boolean {
+    return proto3.util.equals(PlanRouteRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message chronotopia.PlanRouteResponse
+ */
+export class PlanRouteResponse extends Message<PlanRouteResponse> {
+  /**
+   * @generated from field: string geojson = 1;
+   */
+  geojson = "";
+
+  /**
+   * @generated from field: repeated chronotopia.RoadSegment segments = 2;
+   */
+  segments: RoadSegment[] = [];
+
+  constructor(data?: PartialMessage<PlanRouteResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "chronotopia.PlanRouteResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "geojson", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "segments", kind: "message", T: RoadSegment, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): PlanRouteResponse {
+    return new PlanRouteResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): PlanRouteResponse {
+    return new PlanRouteResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): PlanRouteResponse {
+    return new PlanRouteResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: PlanRouteResponse | PlainMessage<PlanRouteResponse> | undefined, b: PlanRouteResponse | PlainMessage<PlanRouteResponse> | undefined): boolean {
+    return proto3.util.equals(PlanRouteResponse, a, b);
+  }
+}
+
+/**
  * Represents civil time (or occasionally physical time).
  *
  * This type can represent a civil time in one of a few possible ways:

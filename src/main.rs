@@ -1,7 +1,8 @@
-#![allow(dead_code, unused_variables)]
+//#![allow(dead_code, unused_variables)]
 #![feature(structural_match)]
 #![feature(fmt_helpers_for_derive)]
 #![feature(panic_internals)]
+#![feature(breakpoint)]
 mod auth;
 mod debug;
 mod entity;
@@ -26,9 +27,10 @@ use http::Method;
 use log::info;
 use osm_preprocessing::WaySegment;
 use proto::chronotopia_server::{Chronotopia, ChronotopiaServer};
+use proto::common_server::CommonServer;
 use proto::trips_server::TripsServer;
 use proto::user_management_server::UserManagementServer;
-use proto::{ConnectivityRequest, LatLon, Trip, WindowDebugRequest};
+use proto::{ConnectivityRequest, LatLon, RoadSegment, Trip, WindowDebugRequest};
 use route_matcher::{
     MatchedWaySegment, PathfindingDebugInfo, PathfindingResult, RouteMatchJob, RouteMatcher,
     RouteMatcherConfig, TileConfig, WindowTrace,
@@ -114,6 +116,9 @@ async fn main() -> Result<()> {
     let user_management_service = UserManagementService::new(db.clone());
     let user_management_svc = UserManagementServer::new(user_management_service);
 
+    let common_service = CommonService::new().await?;
+    let common_svc = CommonServer::new(common_service);
+
     // Create the authenticated ingest service with middleware
     let ingest_service = IngestService::new(db.clone());
     // let ingest_svc = IngestServer::with_interceptor(ingest_service, auth_interceptor);
@@ -136,6 +141,7 @@ async fn main() -> Result<()> {
         .add_service(user_management_svc)
         .add_service(ingest_svc)
         .add_service(trip_api_svc)
+        .add_service(common_svc)
         .serve(addr)
         .await
         .unwrap();
@@ -999,6 +1005,61 @@ impl From<PathfindingDebugInfo> for proto::PathfindingDebugInfo {
             attempted_pairs,
             constrained_candidates,
             reason: debug_info.reason.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CommonService {
+    route_matcher: std::sync::Arc<std::sync::Mutex<RouteMatcher>>,
+}
+
+impl CommonService {
+    pub async fn new() -> Result<Self> {
+        let route_matcher = RouteMatcher::new(ROUTE_MATCHER_CONFIG.clone())?;
+        Ok(Self {
+            route_matcher: std::sync::Arc::new(std::sync::Mutex::new(route_matcher)),
+        })
+    }
+}
+
+#[tonic::async_trait]
+impl proto::common_server::Common for CommonService {
+    async fn plan_route(
+        &self,
+        request: Request<proto::PlanRouteRequest>,
+    ) -> Result<Response<proto::PlanRouteResponse>, Status> {
+        let req = request.into_inner();
+
+        // Convert start and end points
+        let start_point: Point<f64> = req.start_point.unwrap().into();
+        let end_point: Point<f64> = req.end_point.unwrap().into();
+
+        // Convert via points
+        let via_points: Vec<Point<f64>> = req
+            .via_points
+            .iter()
+            .map(|p| Point::<f64>::from(*p))
+            .collect();
+
+        // Call route planner
+        let mut route_matcher = self.route_matcher.lock().map_err(|e| {
+            Status::internal(format!("Failed to acquire route matcher lock: {}", e))
+        })?;
+
+        match route_matcher.plan_route(start_point, end_point, &via_points) {
+            Ok((geojson, segments)) => {
+                let response = proto::PlanRouteResponse {
+                    geojson: serde_json::to_string(&geojson).unwrap_or_default(),
+                    segments: segments
+                        .into_iter()
+                        .map(|s| RoadSegment::from(&s))
+                        .collect(),
+                };
+
+                Ok(Response::new(response))
+            }
+            Err(e) => Err(Status::internal(format!("Route planning failed: {}", e))),
         }
     }
 }

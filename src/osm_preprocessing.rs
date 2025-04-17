@@ -22,7 +22,7 @@ use std::{
 
 use crate::route_matcher::{TileConfig, calculate_heading};
 use crate::routing::{
-    are_road_types_compatible, calculate_transition_cost, check_segment_connectivity,
+    are_road_types_compatible, calculate_static_transition_cost, check_segment_connectivity,
 };
 
 /// Represents a road segment in the processed network
@@ -412,7 +412,7 @@ impl OSMProcessor {
 
         // Step 5: Generate tiles (in parallel)
         info!("Step 5: Generating adaptive tiles with metadata and graph in parallel");
-        self.generate_tiles_parallel(&temp_dir, &connected_segment_files, output_dir, &mp)?;
+        self.generate_tiles_parallel(&connected_segment_files, output_dir, &mp)?;
 
         // Step 6: Write scratch file
         self.update_segment_id_counter()?;
@@ -1413,7 +1413,6 @@ impl OSMProcessor {
     /// Generate tiles from connected segments in parallel
     fn generate_tiles_parallel(
         &self,
-        temp_dir: &Path,
         connected_segment_files: &[PathBuf],
         output_dir: &str,
         mp: &MultiProgress,
@@ -1495,10 +1494,7 @@ impl OSMProcessor {
                         {
                             let mut tiles = all_tiles.lock().unwrap();
                             for (tile_id, segments) in local_tiles {
-                                tiles
-                                    .entry(tile_id)
-                                    .or_default()
-                                    .extend(segments);
+                                tiles.entry(tile_id).or_default().extend(segments);
                             }
                         }
 
@@ -1610,9 +1606,10 @@ impl OSMProcessor {
 
         // Track all nodes, not just endpoints
         for segment in segment_map.values() {
-            for &node_id in &segment.nodes {
+            for node_id in segment.nodes.iter() {
+                // Store both segment ID and node position for later directional checking
                 node_to_segments
-                    .entry(node_id)
+                    .entry(*node_id)
                     .or_default()
                     .push(segment.id);
             }
@@ -1622,9 +1619,9 @@ impl OSMProcessor {
         for segment in segment_map.values() {
             for &connected_segment_id in &segment.connections {
                 if !graph.contains_edge(segment.id, connected_segment_id) {
-                    // Calculate transition cost
-                    let cost = if let Some(conn_segment) = segment_map.get(&connected_segment_id) {
-                        // Find a common node for entry
+                    // Get the connected segment
+                    if let Some(conn_segment) = segment_map.get(&connected_segment_id) {
+                        // Find common nodes between segments
                         let common_nodes: Vec<u64> = segment
                             .nodes
                             .iter()
@@ -1632,25 +1629,34 @@ impl OSMProcessor {
                             .cloned()
                             .collect();
 
-                        // Use the first common node or None if no common node
-                        let entry_node = common_nodes.first().cloned();
+                        let node_id = common_nodes
+                            .first()
+                            .expect("No common nodes between connected segments");
+                        if common_nodes.len() > 1 {
+                            warn!("Only the first common node is considered");
+                        }
 
-                        calculate_transition_cost(segment, conn_segment, entry_node, None)
-                    } else {
-                        // Default cost
-                        1.0
-                    };
+                        let segment_connection_node_idx =
+                            segment.nodes.iter().position(|&n| n == *node_id).unwrap();
+                        let conn_segment_connection_node_idx = conn_segment
+                            .nodes
+                            .iter()
+                            .position(|&n| n == *node_id)
+                            .unwrap();
 
-                    graph.add_edge(segment.id, connected_segment_id, cost);
-                    if !segment.is_oneway {
-                        graph.add_edge(connected_segment_id, segment.id, cost);
+                        Self::add_edges(
+                            segment,
+                            segment_connection_node_idx,
+                            conn_segment,
+                            conn_segment_connection_node_idx,
+                            &mut graph,
+                        );
                     }
                 }
             }
         }
 
         // Track connectivity additions for reporting
-        let mut added_endpoint_connections = 0;
         let mut added_intermediate_connections = 0;
 
         // Now check for shared nodes that might have been missed in explicit connections
@@ -1674,104 +1680,71 @@ impl OSMProcessor {
                                 continue;
                             }
 
-                            // Check the position of the shared node in each segment
-                            let is_segment_endpoint = *segment.nodes.first().unwrap() == node_id
-                                || *segment.nodes.last().unwrap() == node_id;
+                            // Get positions of node in both segments for directional validation
+                            let segment_connection_node_idx =
+                                segment.nodes.iter().position(|&n| n == node_id).unwrap();
+                            let other_segment_connection_node_idx = other_segment
+                                .nodes
+                                .iter()
+                                .position(|&n| n == node_id)
+                                .unwrap();
 
-                            let is_other_endpoint = *other_segment.nodes.first().unwrap()
-                                == node_id
-                                || *other_segment.nodes.last().unwrap() == node_id;
+                            // Additional checks to determine if this is a true connection
 
-                            // Prepare for entry node calculation
-                            let entry_node = Some(node_id);
-
-                            // Case 1: Both segments have this node as an endpoint (standard case)
-                            if is_segment_endpoint && is_other_endpoint {
-                                let cost = calculate_transition_cost(
-                                    segment,
-                                    other_segment,
-                                    entry_node,
-                                    None,
-                                );
-                                graph.add_edge(segment_id, other_segment_id, cost);
-                                added_endpoint_connections += 1;
-                                continue;
-                            }
-
-                            // Case 2: Endpoint connecting to an intermediate node (intersection)
-                            if is_segment_endpoint || is_other_endpoint {
-                                // For cases where a road endpoint meets another road at an intersection
-                                // This is a legitimate connection - create a path from endpoint to midpoint
-                                let cost = calculate_transition_cost(
-                                    segment,
-                                    other_segment,
-                                    entry_node,
-                                    None,
-                                );
-                                graph.add_edge(segment_id, other_segment_id, cost);
-                                added_intermediate_connections += 1;
-                                continue;
-                            }
-
-                            // Case 3: Both nodes are intermediate
-                            // This is the trickiest case - need to check if this is actually
-                            // an intersection rather than just two roads passing over each other
-
-                            // First check if these segments are from the same OSM way
-                            // In that case, they definitely should connect
+                            // Check if they're from the same OSM way
                             if segment.osm_way_id == other_segment.osm_way_id {
-                                let cost = calculate_transition_cost(
+                                Self::add_edges(
                                     segment,
+                                    segment_connection_node_idx,
                                     other_segment,
-                                    entry_node,
-                                    None,
+                                    other_segment_connection_node_idx,
+                                    &mut graph,
                                 );
-                                graph.add_edge(segment_id, other_segment_id, cost);
-                                added_intermediate_connections += 1;
+                                added_intermediate_connections += 2;
                                 continue;
                             }
 
-                            // For different OSM ways, check other factors that suggest connectivity
+                            // For different OSM ways, apply more stringent checks
 
-                            // 1. Compare the road names - if they're the same, likely connected
+                            // 1. Compare road names - same name likely connected
                             let same_name = match (&segment.name, &other_segment.name) {
                                 (Some(name1), Some(name2)) => name1 == name2 && !name1.is_empty(),
                                 _ => false,
                             };
 
-                            // 2. Check if they share multiple nodes (stronger evidence of connection)
+                            // 2. Check for multiple shared nodes - stronger connection evidence
                             let common_nodes_count = segment
                                 .nodes
                                 .iter()
                                 .filter(|&n| other_segment.nodes.contains(n))
                                 .count();
 
-                            // 3. Get highway types and check if they're compatible
+                            // 3. Check if road types are compatible
                             let compatible_roads = are_road_types_compatible(
                                 &segment.highway_type,
                                 &other_segment.highway_type,
                             );
 
-                            // 4. Use a topological check (do these roads visibly intersect)
+                            // 4. Geometric intersection check
                             let line1 = LineString::from(segment.coordinates.clone());
                             let line2 = LineString::from(other_segment.coordinates.clone());
                             let geometry_intersects = line1.intersects(&line2);
 
-                            // If multiple factors suggest connection, connect the segments
+                            // Add connection if evidence is strong, respecting one-way direction
                             let should_connect = (same_name && common_nodes_count > 0)
                                 || (common_nodes_count >= 2)
                                 || (compatible_roads && geometry_intersects);
 
                             if should_connect {
-                                // Higher cost for this less certain connection
-                                let cost = calculate_transition_cost(
+                                // Apply directional constraints even for strong connections
+                                Self::add_edges(
                                     segment,
+                                    segment_connection_node_idx,
                                     other_segment,
-                                    entry_node,
-                                    None,
-                                ) * 1.5;
-                                graph.add_edge(segment_id, other_segment_id, cost);
-                                added_intermediate_connections += 1;
+                                    other_segment_connection_node_idx,
+                                    &mut graph,
+                                );
+                                added_intermediate_connections += 2;
                             }
                         }
                     }
@@ -1787,8 +1760,8 @@ impl OSMProcessor {
         );
 
         info!(
-            "Added {} connections between endpoints and {} connections via intermediate nodes",
-            added_endpoint_connections, added_intermediate_connections
+            "Added {} connections via intermediate nodes",
+            added_intermediate_connections
         );
 
         let tile_graph = TileGraph {
@@ -1797,6 +1770,44 @@ impl OSMProcessor {
         };
 
         Ok(tile_graph)
+    }
+
+    // Helper function to check if a connection from segment to other_segment is valid
+    // Specific care is applied in naming the variables: there is not a from-to relation,
+    // we need to check and add all valid edges depending solely on segment directionality
+    pub(crate) fn add_edges(
+        segment: &WaySegment,
+        segment_connection_node_idx: usize,
+        other_segment: &WaySegment,
+        other_segment_connection_node_idx: usize,
+        graph: &mut DiGraphMap<u64, f64>,
+    ) {
+        let segment_last_node_idx = segment.nodes.len() - 1;
+        let other_segment_last_node_idx = other_segment.nodes.len() - 1;
+        let mut add_from_segment_to_other = true;
+        let mut add_from_other_to_segment = true;
+
+        if segment.is_oneway && other_segment.is_oneway {
+            if segment_connection_node_idx == other_segment_last_node_idx {
+                // invalid - we cannot connect to the end of the one way other segment
+                add_from_segment_to_other = false;
+                add_from_other_to_segment = false;
+            } else if other_segment_connection_node_idx == segment_last_node_idx {
+                // invalid - we cannot connect to the end of the one way segment one
+                add_from_segment_to_other = false;
+                add_from_other_to_segment = false;
+            }
+        }
+
+        if add_from_segment_to_other {
+            let cost = calculate_static_transition_cost(segment, other_segment);
+            graph.add_edge(segment.id, other_segment.id, cost);
+        }
+
+        if add_from_other_to_segment {
+            let cost = calculate_static_transition_cost(segment, other_segment);
+            graph.add_edge(other_segment.id, segment.id, cost);
+        }
     }
 
     // Helper function to generate tile ID string

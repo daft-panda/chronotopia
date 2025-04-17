@@ -7,60 +7,91 @@ use crate::{osm_preprocessing::WaySegment, route_matcher::DISTANCE_THRESHOLD_FOR
 /// Parameters:
 /// - from_seg: The segment we're coming from
 /// - to_seg: The segment we're going to
-/// - entry_node: Optional OSM node ID where the segments connect
 /// Calculate the traversal cost between two road segments
-pub(crate) fn calculate_transition_cost(
-    from_seg: &WaySegment,
-    to_seg: &WaySegment,
-    entry_node: Option<u64>,
-    gps_points: Option<&[Point<f64>]>,
+pub(crate) fn calculate_static_transition_cost(
+    from_segment: &WaySegment,
+    to_segment: &WaySegment,
 ) -> f64 {
     // Early validation
-    if from_seg.coordinates.is_empty() || to_seg.coordinates.is_empty() {
-        return f64::INFINITY;
+    if from_segment.coordinates.is_empty() || to_segment.coordinates.is_empty() {
+        panic!("Segment coordinates invalid");
     }
 
+    // Road type preference factor
+    let road_type_factor = get_road_type_factor(&to_segment.highway_type);
+
+    // Continuity bonus for staying on the same road
+    let continuity_factor = if from_segment.osm_way_id == to_segment.osm_way_id {
+        0.7 // 30% discount
+    } else {
+        1.0
+    };
+
+    // Calculate base cost combines all factors
+    (road_type_factor * continuity_factor) + 1.0
+}
+
+/// Calculate the traversal cost between two road segments
+///
+/// Parameters:
+/// - from_seg: The segment we're coming from
+/// - to_seg: The segment we're going to
+/// - from_segment_idx_node: Node index from which the from_segment will be entered
+/// Calculate the dynamic traversal cost between two road segments
+pub(crate) fn calculate_dynamic_transition_cost(
+    from_segment: &WaySegment,
+    to_segment: &WaySegment,
+    from_segment_entry_idx: usize,
+    gps_points: Option<&[Point<f64>]>,
+) -> (f64, f64) {
+    // Early validation
+    if from_segment.coordinates.is_empty() || to_segment.coordinates.is_empty() {
+        panic!("Segment coordinates invalid");
+    }
+
+    let static_cost = calculate_static_transition_cost(from_segment, to_segment);
+
     // Get the connection node ID
-    let connection_node_id = match entry_node {
-        Some(node_id) => node_id,
-        None => {
-            // Find common node IDs between segments
-            let shared_node_ids: Vec<u64> = from_seg
-                .nodes
-                .iter()
-                .filter(|n| to_seg.nodes.contains(n))
-                .cloned()
-                .collect();
+    let connection_node_id = {
+        // Find common node IDs between segments
+        let shared_node_ids: Vec<u64> = from_segment
+            .nodes
+            .iter()
+            .filter(|n| to_segment.nodes.contains(n))
+            .cloned()
+            .collect();
 
-            if shared_node_ids.is_empty() {
-                // No shared nodes, cannot establish connection
-                return f64::INFINITY;
+        if shared_node_ids.is_empty() {
+            // No shared nodes, cannot establish connection
+            panic!("No shared nodes");
+        } else {
+            // Prefer endpoint connections if available
+            let from_last_id = *from_segment.nodes.last().unwrap_or(&0);
+            let to_first_id = *to_segment.nodes.first().unwrap_or(&0);
+
+            if shared_node_ids.contains(&from_last_id) && shared_node_ids.contains(&to_first_id) {
+                from_last_id // Optimal end-to-start connection
             } else {
-                // Prefer endpoint connections if available
-                let from_last_id = *from_seg.nodes.last().unwrap_or(&0);
-                let to_first_id = *to_seg.nodes.first().unwrap_or(&0);
-
-                if shared_node_ids.contains(&from_last_id) && shared_node_ids.contains(&to_first_id)
-                {
-                    from_last_id // Optimal end-to-start connection
-                } else {
-                    // Just use any shared node ID
-                    shared_node_ids[0]
-                }
+                // Just use any shared node ID
+                shared_node_ids[0]
             }
         }
     };
 
     // Find array indices of the connection node ID in both segments
-    let entry_idx = match from_seg.nodes.iter().position(|&n| n == connection_node_id) {
+    let from_connection_idx = match from_segment
+        .nodes
+        .iter()
+        .position(|&n| n == connection_node_id)
+    {
         Some(idx) => idx,
-        None => return f64::INFINITY, // Node ID not found in from_segment
+        None => panic!("Connecting node not found"),
     };
 
-    let exit_idx = match to_seg.nodes.iter().position(|&n| n == connection_node_id) {
-        Some(idx) => idx,
-        None => return f64::INFINITY, // Node ID not found in to_segment
-    };
+    if from_segment.is_oneway && from_segment_entry_idx > from_connection_idx {
+        // We are entering past the connection which is invalid
+        panic!("Entering past the connection point");
+    }
 
     // Determine the entry point for the from_segment
 
@@ -73,53 +104,48 @@ pub(crate) fn calculate_transition_cost(
     // 2. Traversal through a segment from one node to another
 
     // Calculate distance along from_segment between entry and exit points
-    let segment_distance = if entry_idx == exit_idx {
+    let distance = if from_connection_idx == from_segment_entry_idx {
         // No traversal (enter and exit at same point)
-        0.1 // Minimal cost
+        0. // Minimal cost
     } else {
         // We need to sum up distances between consecutive coordinates
         let mut distance = 0.0;
 
         // Make sure indices are properly ordered for iteration
-        let (start_idx, end_idx) = if entry_idx <= exit_idx {
-            (entry_idx, exit_idx)
+        let (start_idx, end_idx) = if from_segment_entry_idx <= from_connection_idx {
+            (from_segment_entry_idx, from_connection_idx)
         } else {
-            (exit_idx, entry_idx)
+            (from_connection_idx, from_segment_entry_idx)
         };
 
         // Walk along the segment coordinates and sum distances
         for i in start_idx..end_idx {
-            if i + 1 < from_seg.coordinates.len() {
-                let p1 = geo::Point::new(from_seg.coordinates[i].x, from_seg.coordinates[i].y);
-                let p2 =
-                    geo::Point::new(from_seg.coordinates[i + 1].x, from_seg.coordinates[i + 1].y);
+            if i + 1 < from_segment.coordinates.len() {
+                let p1 =
+                    geo::Point::new(from_segment.coordinates[i].x, from_segment.coordinates[i].y);
+                let p2 = geo::Point::new(
+                    from_segment.coordinates[i + 1].x,
+                    from_segment.coordinates[i + 1].y,
+                );
                 distance += Haversine.distance(p1, p2);
             }
         }
 
-        // Normalize distance to a reasonable cost value
-        (distance / 100.0).max(0.1)
+        distance
     };
 
-    // Road type preference factor
-    let road_type_factor = get_road_type_factor(&to_seg.highway_type);
-
-    // Continuity bonus for staying on the same road
-    let continuity_factor = if from_seg.osm_way_id == to_seg.osm_way_id {
-        0.7 // 30% discount
-    } else {
-        1.0
-    };
+    // Normalize distance to a reasonable cost value
+    let distance_cost = (distance / 100.0).max(0.1);
 
     // Calculate base cost combines all factors
-    let mut base_cost = (segment_distance * road_type_factor * continuity_factor) + 1.0;
+    let mut base_cost = (distance_cost * static_cost) + 1.0;
 
     // Check GPS proximity if points are provided
     if let Some(points) = gps_points {
         // Check proximity to the destination segment (to_seg)
         for point in points {
             // Project the point to the segment to get the closest point
-            let line = LineString::from(to_seg.coordinates.clone());
+            let line = LineString::from(to_segment.coordinates.clone());
             let closest = line.closest_point(point);
 
             let projection = match closest {
@@ -139,61 +165,7 @@ pub(crate) fn calculate_transition_cost(
     }
 
     // Return base cost if no GPS proximity bonus applied
-    base_cost
-}
-
-/// Determine the entry and exit indices for traversing a segment
-/// Returns (entry_idx, exit_idx) for the from_segment
-pub(crate) fn determine_traversal_indices(
-    from_seg: &WaySegment,
-    to_seg: &WaySegment,
-    connection_idx: usize,
-) -> (usize, usize) {
-    // For one-way roads, direction is more constrained
-    if from_seg.is_oneway {
-        // For one-way, we typically enter at index 0 and exit at the connection
-        return (0, connection_idx);
-    }
-
-    // For bidirectional roads, we need to determine the most likely entry point
-    // based on the segment's topology
-
-    // Case 1: Connection at start node (index 0)
-    if connection_idx == 0 {
-        // We're exiting at the start, so we must have entered at the end
-        return (from_seg.nodes.len() - 1, connection_idx);
-    }
-
-    // Case 2: Connection at end node
-    if connection_idx == from_seg.nodes.len() - 1 {
-        // We're exiting at the end, so we must have entered at the start
-        return (0, connection_idx);
-    }
-
-    // Case 3: Connection at intermediate node
-    // This is more complex - we need to determine which direction makes more sense
-
-    // If from_seg and to_seg share the same OSM way ID, prefer to continue in same direction
-    if from_seg.osm_way_id == to_seg.osm_way_id {
-        // Look at the to_segment's node index to determine direction
-        let to_conn_idx = to_seg
-            .nodes
-            .iter()
-            .position(|&n| n == from_seg.nodes[connection_idx])
-            .unwrap_or(0);
-
-        if to_conn_idx == 0 {
-            // Entering to_seg at its start, so we likely came from the start of from_seg
-            return (0, connection_idx);
-        } else if to_conn_idx == to_seg.nodes.len() - 1 {
-            // Entering to_seg at its end, so we likely came from the end of from_seg
-            return (from_seg.nodes.len() - 1, connection_idx);
-        }
-    }
-
-    // Default: assume we entered at the start
-    // This is a reasonable fallback for most routing scenarios
-    (0, connection_idx)
+    (base_cost, distance)
 }
 
 /// Get factor for road type preference
@@ -314,12 +286,7 @@ pub(crate) fn check_segment_connectivity(
         );
     }
 
-    // 4. Check traffic direction compatibility
-    if segment1.is_oneway && segment2.is_oneway {
-        // Additional checks could be performed here for direction compatibility
-    }
-
-    // 5. Now check if they should actually connect (spatial relationship)
+    // 4. Now check if they should actually connect (spatial relationship)
 
     // First check for shared nodes - this is the most reliable indicator
     let mut shared_nodes = Vec::new();

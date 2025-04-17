@@ -372,7 +372,7 @@ impl Trips for TripsService {
         let points: Vec<Point> = match trip.points {
             Some(v) => {
                 let points: Points = prost::Message::decode(v.as_slice())
-                    .map_err(|e| Status::internal("invalid points in db trip"))?;
+                    .map_err(|_e| Status::internal("invalid points in db trip"))?;
                 points.points
             }
             None => vec![],

@@ -742,22 +742,26 @@ impl DebugVisualizer {
 
                     // Also add individual segments for the first successful path
                     if i == 0 {
-                        for (j, segment) in path.iter().enumerate() {
-                            let seg_coords: Vec<Vec<f64>> =
-                                segment.coordinates.iter().map(|c| vec![c.x, c.y]).collect();
+                        for (j, matched) in path.iter().enumerate() {
+                            let seg_coords: Vec<Vec<f64>> = matched
+                                .segment
+                                .coordinates
+                                .iter()
+                                .map(|c| vec![c.x, c.y])
+                                .collect();
 
                             features.push(json!({
                                 "type": "Feature",
                                 "properties": {
                                     "type": "path_segment",
-                                    "segment_id": segment.id,
-                                    "osm_way_id": segment.osm_way_id,
+                                    "segment_id": matched.segment.id,
+                                    "osm_way_id": matched.segment.osm_way_id,
                                     "index": j,
                                     "color": "#00cccc",
                                     "weight": 3,
                                     "opacity": 0.8,
                                     "description": format!("Path Segment #{}: ID {} (OSM: {})",
-                                        j, segment.id, segment.osm_way_id)
+                                        j, matched.segment.id, matched.segment.osm_way_id)
                                 },
                                 "geometry": {
                                     "type": "LineString",

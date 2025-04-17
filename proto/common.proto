@@ -2,6 +2,12 @@ syntax = "proto3";
 
 package chronotopia;
 
+service Common {
+    // Plan route between points
+  rpc PlanRoute(PlanRouteRequest) returns (PlanRouteResponse);
+}
+
+
 message RoadSegment {
     uint64 id = 1;
     uint64 osm_way_id = 2;
@@ -35,6 +41,17 @@ message Point {
 
 message Points { 
   repeated Point points = 1;
+}
+
+message PlanRouteRequest {
+  LatLon start_point = 1;
+  LatLon end_point = 2;
+  repeated LatLon via_points = 3;
+}
+
+message PlanRouteResponse {
+  string geojson = 1;
+  repeated RoadSegment segments = 2;
 }
 
 // BELOW Copyright 2025 Google LLC

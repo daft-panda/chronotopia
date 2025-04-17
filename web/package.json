@@ -25,7 +25,9 @@
     "nuxt-workers": "0.1.0",
     "streets-gl-lib": "link:streets-gl-lib",
     "typescript": "^5.8.3",
+    "uuid": "^11.1.0",
     "vue": "^3.5.13",
+    "vue-draggable-plus": "^0.6.0",
     "vue-router": "^4.5.0",
     "vue-timeline-chart": "^2.12.0"
   },

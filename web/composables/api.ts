@@ -10,6 +10,7 @@ import { Chronotopia } from "../model/chronotopia_connect";
 import { Ingest } from "../model/ingest_connect";
 import { Trips } from "../model/trips_connect";
 import { UserManagement } from "../model/user_management_connect";
+import { Common } from "~/model/common_connect";
 
 // WATCH OUT
 // Even though recent browsers should support it, loading the web GRPC transport at runtime
@@ -65,11 +66,13 @@ export const useApi = () => {
   const userManagementApi = createPromiseClient(UserManagement, transport);
   const ingestApi = createPromiseClient(Ingest, transport);
   const tripsApi = createPromiseClient(Trips, transport);
+  const commonApi = createPromiseClient(Common, transport);
 
   return {
     api,
     userManagementApi,
     ingestApi,
     tripsApi,
+    commonApi,
   };
 };
