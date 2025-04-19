@@ -497,39 +497,39 @@ export class TriggerProcessingResponse extends Message<TriggerProcessingResponse
 /**
  * Request to get trip details
  *
- * @generated from message chronotopia.GetTripDetailsRequest
+ * @generated from message chronotopia.TripReference
  */
-export class GetTripDetailsRequest extends Message<GetTripDetailsRequest> {
+export class TripReference extends Message<TripReference> {
   /**
    * @generated from field: chronotopia.UUID trip_id = 1;
    */
   tripId?: UUID;
 
-  constructor(data?: PartialMessage<GetTripDetailsRequest>) {
+  constructor(data?: PartialMessage<TripReference>) {
     super();
     proto3.util.initPartial(data, this);
   }
 
   static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "chronotopia.GetTripDetailsRequest";
+  static readonly typeName = "chronotopia.TripReference";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "trip_id", kind: "message", T: UUID },
   ]);
 
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetTripDetailsRequest {
-    return new GetTripDetailsRequest().fromBinary(bytes, options);
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): TripReference {
+    return new TripReference().fromBinary(bytes, options);
   }
 
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetTripDetailsRequest {
-    return new GetTripDetailsRequest().fromJson(jsonValue, options);
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): TripReference {
+    return new TripReference().fromJson(jsonValue, options);
   }
 
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetTripDetailsRequest {
-    return new GetTripDetailsRequest().fromJsonString(jsonString, options);
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): TripReference {
+    return new TripReference().fromJsonString(jsonString, options);
   }
 
-  static equals(a: GetTripDetailsRequest | PlainMessage<GetTripDetailsRequest> | undefined, b: GetTripDetailsRequest | PlainMessage<GetTripDetailsRequest> | undefined): boolean {
-    return proto3.util.equals(GetTripDetailsRequest, a, b);
+  static equals(a: TripReference | PlainMessage<TripReference> | undefined, b: TripReference | PlainMessage<TripReference> | undefined): boolean {
+    return proto3.util.equals(TripReference, a, b);
   }
 }
 

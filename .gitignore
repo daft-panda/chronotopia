@@ -19,7 +19,7 @@ target/
 #.idea/
 
 # Added by cargo
-
+*.txt
 /target
 /sample
 /tmp-entity

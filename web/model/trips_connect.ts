@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { GetTripDetailsRequest, GetTripDetailsResponse, GetTripsForUserRequest, GetTripsForUserResponse, GetUserProcessingStateResponse, TriggerProcessingResponse } from "./trips_pb.js";
+import { GetTripDetailsResponse, GetTripsForUserRequest, GetTripsForUserResponse, GetUserProcessingStateResponse, TriggerProcessingResponse, TripReference } from "./trips_pb.js";
 import { Empty, MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -52,8 +52,19 @@ export const Trips = {
      */
     getTripDetails: {
       name: "GetTripDetails",
-      I: GetTripDetailsRequest,
+      I: TripReference,
       O: GetTripDetailsResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * Reprocess a specific trip
+     *
+     * @generated from rpc chronotopia.Trips.ReprocessTrip
+     */
+    reprocessTrip: {
+      name: "ReprocessTrip",
+      I: TripReference,
+      O: TriggerProcessingResponse,
       kind: MethodKind.Unary,
     },
   }

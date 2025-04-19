@@ -17,7 +17,10 @@ service Trips {
     rpc TriggerProcessing(google.protobuf.Empty) returns (TriggerProcessingResponse);
     
     // Get detailed trip information
-    rpc GetTripDetails(GetTripDetailsRequest) returns (GetTripDetailsResponse);
+    rpc GetTripDetails(TripReference) returns (GetTripDetailsResponse);
+
+    // Reprocess a specific trip
+    rpc ReprocessTrip(TripReference) returns (TriggerProcessingResponse);
 }
 
 // Trip model
@@ -90,7 +93,7 @@ message TriggerProcessingResponse {
 }
 
 // Request to get trip details
-message GetTripDetailsRequest {
+message TripReference {
     UUID trip_id = 1;
 }
 

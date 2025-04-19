@@ -1,5 +1,4 @@
 use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, Timelike, Utc};
-use migration::ValueType;
 
 use crate::proto::date_time::TimeOffset;
 

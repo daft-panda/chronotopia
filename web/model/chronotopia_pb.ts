@@ -12,9 +12,9 @@ import { Point, RoadSegment } from "./common_pb.js";
  */
 export class WindowDebugRequest extends Message<WindowDebugRequest> {
   /**
-   * @generated from field: uint32 trip_index = 1;
+   * @generated from field: string trip_id = 1;
    */
-  tripIndex = 0;
+  tripId = "";
 
   /**
    * @generated from field: uint32 window_index = 2;
@@ -49,7 +49,7 @@ export class WindowDebugRequest extends Message<WindowDebugRequest> {
   static readonly runtime: typeof proto3 = proto3;
   static readonly typeName = "chronotopia.WindowDebugRequest";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "trip_index", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+    { no: 1, name: "trip_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "window_index", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
     { no: 3, name: "start_point", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
     { no: 4, name: "end_point", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
@@ -79,9 +79,9 @@ export class WindowDebugRequest extends Message<WindowDebugRequest> {
  */
 export class ConnectivityRequest extends Message<ConnectivityRequest> {
   /**
-   * @generated from field: uint32 trip_index = 1;
+   * @generated from field: string trip_id = 1;
    */
-  tripIndex = 0;
+  tripId = "";
 
   /**
    * @generated from field: optional uint32 start_point_index = 2;
@@ -111,7 +111,7 @@ export class ConnectivityRequest extends Message<ConnectivityRequest> {
   static readonly runtime: typeof proto3 = proto3;
   static readonly typeName = "chronotopia.ConnectivityRequest";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "trip_index", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+    { no: 1, name: "trip_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "start_point_index", kind: "scalar", T: 13 /* ScalarType.UINT32 */, opt: true },
     { no: 3, name: "end_point_index", kind: "scalar", T: 13 /* ScalarType.UINT32 */, opt: true },
     { no: 4, name: "from_segment_id", kind: "scalar", T: 4 /* ScalarType.UINT64 */, opt: true },

@@ -1,7 +1,6 @@
-//#![allow(dead_code, unused_variables)]
+#![allow(dead_code, unused_variables)]
 #![feature(structural_match)]
 #![feature(fmt_helpers_for_derive)]
-#![feature(panic_internals)]
 #![feature(breakpoint)]
 mod auth;
 mod debug;
@@ -20,6 +19,7 @@ mod user_management;
 use crate::auth::auth_interceptor;
 use crate::ingest::IngestService;
 use crate::proto::ingest_server::IngestServer;
+use crate::proto::trips_server::Trips;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use geo::{Coord, Distance, Haversine, Point};
@@ -39,7 +39,7 @@ use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex};
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
@@ -49,12 +49,13 @@ use trip_builder::TripBuilder;
 use trip_processor::TripProcessor;
 use trips::TripsService;
 use user_management::UserManagementService;
+use uuid::Uuid;
 
 static ROUTE_MATCHER_CONFIG: LazyLock<RouteMatcherConfig> = LazyLock::new(|| RouteMatcherConfig {
     osm_pbf_path: "../sudeste-latest.osm.pbf".to_string(),
     tile_cache_dir: "sample/tiles".to_string(),
     max_cached_tiles: 500,
-    max_matching_distance: 50.0,
+    max_matching_distance: 20.0,
     tile_config: TileConfig {
         base_tile_size: 1.0,
         min_tile_density: 5000,
@@ -97,7 +98,7 @@ async fn main() -> Result<()> {
     let trip_builder = Arc::new(TripBuilder::new(db.clone(), route_matcher));
 
     // Create the trip processor service
-    let trip_processor = TripProcessor::new(db.clone(), trip_builder.clone());
+    let trip_processor = Arc::new(TripProcessor::new(db.clone(), trip_builder.clone()));
 
     // Start trip processor scheduler in background
     let processor_clone = trip_processor.clone();
@@ -106,12 +107,13 @@ async fn main() -> Result<()> {
     });
 
     // Create the trip API service
-    let trip_api_service = TripsService::new(db.clone(), trip_processor.into());
-    let trip_api_svc = TripsServer::with_interceptor(trip_api_service, auth_interceptor);
+    let trip_api_service = TripsService::new(db.clone(), trip_processor);
+    let trip_api_svc = TripsServer::with_interceptor(trip_api_service.clone(), auth_interceptor);
 
     let addr = "[::]:10000".parse()?;
-    let chronotopia_service = ChronotopiaService::new().await?;
-    let chronotopia_svc = ChronotopiaServer::new(chronotopia_service);
+    let chronotopia_service = ChronotopiaService::new(trip_api_service).await?;
+    let chronotopia_svc =
+        ChronotopiaServer::with_interceptor(chronotopia_service, auth_interceptor);
 
     let user_management_service = UserManagementService::new(db.clone());
     let user_management_svc = UserManagementServer::new(user_management_service);
@@ -150,11 +152,19 @@ async fn main() -> Result<()> {
 }
 
 #[derive(Clone)]
-struct ChronotopiaService {}
+struct ChronotopiaService {
+    // Add a reference to the TripsService
+    trips_service: TripsService,
+    route_matcher: Arc<Mutex<RouteMatcher>>,
+}
 
 impl ChronotopiaService {
-    async fn new() -> Result<Self> {
-        Ok(Self {})
+    async fn new(trips_service: TripsService) -> Result<Self> {
+        let route_matcher = RouteMatcher::new(ROUTE_MATCHER_CONFIG.clone())?;
+        Ok(Self {
+            trips_service,
+            route_matcher: Arc::new(Mutex::new(route_matcher)),
+        })
     }
 
     async fn load_tiles_for_segments(
@@ -264,6 +274,41 @@ impl ChronotopiaService {
 
         Ok(())
     }
+
+    // Fetch a trip by ID from the database
+    async fn get_trip_by_id(&self, trip_id_str: &str, user_id: &Uuid) -> Result<Trip, Status> {
+        // Parse the UUID
+        let trip_id = Uuid::parse_str(trip_id_str)
+            .map_err(|_| Status::invalid_argument(format!("Invalid trip ID: {}", trip_id_str)))?;
+
+        // Create a GetTripDetailsRequest
+        let request = tonic::Request::new(crate::proto::TripReference {
+            trip_id: Some(crate::proto::Uuid {
+                value: trip_id.to_string(),
+            }),
+        });
+
+        // Call the trips service directly (since we're in the same process)
+        // This bypasses authentication for internal calls
+        // NOTE: In a production system, you might want to set up proper authentication here
+        let mut request_with_auth = request;
+        request_with_auth.extensions_mut().insert(*user_id);
+
+        // Call the service
+        let response = self
+            .trips_service
+            .get_trip_details(request_with_auth)
+            .await?;
+
+        // Extract the trip
+        match response.into_inner().trip {
+            Some(trip) => Ok(trip),
+            None => Err(Status::not_found(format!(
+                "Trip not found: {}",
+                trip_id_str
+            ))),
+        }
+    }
 }
 
 #[tonic::async_trait]
@@ -272,11 +317,17 @@ impl Chronotopia for ChronotopiaService {
         &self,
         request: Request<WindowDebugRequest>,
     ) -> Result<Response<proto::PathfindingDebugInfo>, Status> {
-        let req = request.into_inner();
-        let trip_idx = req.trip_index as usize;
+        // Extract authentication context and user id from request
+        let user_id = match request.extensions().get::<Uuid>() {
+            Some(user_id) => *user_id,
+            None => return Err(Status::unauthenticated("User not authenticated")),
+        };
 
-        // Get the processed trip data
-        let processed_trip = Trip::default();
+        let req = request.into_inner();
+        let trip_id = req.trip_id;
+
+        // Fetch the trip using the trips service
+        let processed_trip = self.get_trip_by_id(&trip_id, &user_id).await?;
 
         if let (Some(from_segment_id), Some(to_segment_id)) =
             (req.from_segment_id, req.to_segment_id)
@@ -287,7 +338,7 @@ impl Chronotopia for ChronotopiaService {
             );
 
             let mut route_matcher = RouteMatcher::new(ROUTE_MATCHER_CONFIG.clone())
-                .map_err(|e| Status::internal("failed to blabla"))?;
+                .map_err(|_e| Status::internal("could not create route matcher"))?;
 
             // Create a temporary job for debugging
             let mut job = RouteMatchJob::new(
@@ -326,12 +377,12 @@ impl Chronotopia for ChronotopiaService {
 
         info!(
             "Debugging window pathfinding for trip {}, window {}, points {}-{}",
-            trip_idx, window_index, start_point, end_point
+            trip_id, window_index, start_point, end_point
         );
 
         // Get relevant constraints for this window
         let mut route_matcher = RouteMatcher::new(ROUTE_MATCHER_CONFIG.clone())
-            .map_err(|e| Status::internal("failed to blabla"))?;
+            .map_err(|_e| Status::internal("could not create route matcher"))?;
 
         // Get route match trace for this trip
         let trace = match &processed_trip.route_match_trace {
@@ -347,7 +398,7 @@ impl Chronotopia for ChronotopiaService {
         let window = trace.window_traces.get(window_index).ok_or_else(|| {
             Status::not_found(format!(
                 "Window {} not found in trip {}",
-                window_index, trip_idx
+                window_index, trip_id
             ))
         })?;
 
@@ -375,16 +426,18 @@ impl Chronotopia for ChronotopiaService {
             .map(|p| p.date_time.as_ref().unwrap().into())
             .collect();
 
-        let mut job = RouteMatchJob::new(points, timestamps, None);
+        let mut job = RouteMatchJob::new(points.clone(), timestamps, None);
         job.activate_tracing();
 
-        // Copy graph and segment map from route matcher
+        // Load necessary tiles for this window
+        let trace_bbox = route_matcher.calculate_trace_bbox(&points[start_point..=end_point]);
+        let buffer = (ROUTE_MATCHER_CONFIG.max_matching_distance * 2.0) / 111_000.0;
         let loaded_tiles = route_matcher
             .tile_loader
-            .loaded_tiles
-            .keys()
-            .cloned()
-            .collect();
+            .load_tile_range(trace_bbox, buffer, ROUTE_MATCHER_CONFIG.max_tiles_per_depth)
+            .map_err(|e| Status::internal(format!("Failed to load tiles: {}", e)))?;
+
+        // Copy graph and segment map from route matcher
         let graph = route_matcher.build_road_network(&loaded_tiles).unwrap();
         job.graph.replace(Some(graph.0));
         job.segment_map.replace(graph.1);
@@ -410,17 +463,18 @@ impl Chronotopia for ChronotopiaService {
         &self,
         request: Request<ConnectivityRequest>,
     ) -> Result<Response<prost::alloc::string::String>, Status> {
+        // Extract authentication context and user id from request
+        let user_id = match request.extensions().get::<Uuid>() {
+            Some(user_id) => *user_id,
+            None => return Err(Status::unauthenticated("User not authenticated")),
+        };
+
         let req = request.into_inner();
-        let trip_idx = req.trip_index as usize;
+        let trip_id = req.trip_id;
 
-        // Get the processed trip data
-        // let processed_trips = self.processed_trips.read().await;
-        // let processed_trip = processed_trips.get(&trip_idx).ok_or_else(|| {
-        //     Status::not_found(format!("Trip {} not found or not processed yet", trip_idx))
-        // })?;
-        unimplemented!();
+        // Fetch the trip using the trips service
+        let processed_trip = self.get_trip_by_id(&trip_id, &user_id).await?;
 
-        let processed_trip = Trip::default();
         // Get route match trace for this trip
         let trace = match &processed_trip.route_match_trace {
             Some(trace) => trace,
@@ -439,12 +493,12 @@ impl Chronotopia for ChronotopiaService {
 
             info!(
                 "Analyzing segment connectivity for trip {} between points {}-{}",
-                trip_idx, start_point, end_point
+                trip_id, start_point, end_point
             );
 
             // Create a temporary job for connectivity analysis
             let mut route_matcher = RouteMatcher::new(ROUTE_MATCHER_CONFIG.clone())
-                .map_err(|e| Status::internal("failed to blabla"))?;
+                .map_err(|_e| Status::internal("could not create route matcher"))?;
 
             // Create a job using the trip data
             let points: Vec<Point<f64>> = processed_trip
@@ -463,22 +517,25 @@ impl Chronotopia for ChronotopiaService {
                 .map(|p| p.date_time.as_ref().unwrap().into())
                 .collect();
 
-            let job = RouteMatchJob::new(points, timestamps, None);
+            let mut job = RouteMatchJob::new(points.clone(), timestamps, None);
+            job.activate_tracing();
 
-            // Copy graph and segment map from route matcher
+            // Load necessary tiles for this analysis
+            let trace_bbox = route_matcher.calculate_trace_bbox(&points[start_point..=end_point]);
+            let buffer = (ROUTE_MATCHER_CONFIG.max_matching_distance * 2.0) / 111_000.0;
             let loaded_tiles = route_matcher
                 .tile_loader
-                .loaded_tiles
-                .keys()
-                .cloned()
-                .collect();
+                .load_tile_range(trace_bbox, buffer, ROUTE_MATCHER_CONFIG.max_tiles_per_depth)
+                .map_err(|e| Status::internal(format!("Failed to load tiles: {}", e)))?;
 
-            // Copy graph and segment map from route matcher
+            job.loaded_tiles.replace(loaded_tiles.clone());
+
+            // Build the road network from loaded tiles
             let graph = route_matcher.build_road_network(&loaded_tiles).unwrap();
             job.graph.replace(Some(graph.0));
             job.segment_map.replace(graph.1);
 
-            // Find candidate segments for all points
+            // Find candidate segments for all points in this window
             route_matcher
                 .find_all_candidate_segments(&job, &loaded_tiles)
                 .map_err(|e| {
@@ -496,11 +553,11 @@ impl Chronotopia for ChronotopiaService {
         {
             info!(
                 "Analyzing segment connectivity for trip {} between segments {}-{}",
-                trip_idx, from_segment_id, to_segment_id
+                trip_id, from_segment_id, to_segment_id
             );
 
             let mut route_matcher = RouteMatcher::new(ROUTE_MATCHER_CONFIG.clone())
-                .map_err(|e| Status::internal("failed to blabla"))?;
+                .map_err(|_e| Status::internal("could not create route matcher"))?;
 
             // Create a temporary job for debugging
             let mut job = RouteMatchJob::new(
@@ -522,7 +579,6 @@ impl Chronotopia for ChronotopiaService {
                 .cloned()
                 .collect();
 
-            // Copy graph and segment map from route matcher
             let graph = route_matcher.build_road_network(&loaded_tiles).unwrap();
             job.graph.replace(Some(graph.0));
             job.segment_map.replace(graph.1);
@@ -566,7 +622,7 @@ impl Chronotopia for ChronotopiaService {
         let mut segments_in_radius = HashSet::new();
         let mut connections_count = HashMap::new();
         let mut route_matcher = RouteMatcher::new(ROUTE_MATCHER_CONFIG.clone())
-            .map_err(|e| Status::internal("failed to blabla"))?;
+            .map_err(|_e| Status::internal("could not create route matcher"))?;
         let loaded_tiles: Vec<String> = route_matcher
             .tile_loader
             .loaded_tiles

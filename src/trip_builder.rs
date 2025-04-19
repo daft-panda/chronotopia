@@ -28,8 +28,8 @@ const MAX_VISIT_RADIUS_METERS: f64 = 50.0;
 /// Service for processing location batches into trips
 #[derive(Debug)]
 pub struct TripBuilder {
-    db: DatabaseConnection,
-    route_matcher: Mutex<RouteMatcher>,
+    pub(crate) db: DatabaseConnection,
+    pub(crate) route_matcher: Mutex<RouteMatcher>,
 }
 
 /// State of processing for a single user's data
@@ -579,7 +579,10 @@ impl TripBuilder {
     }
 
     /// Calculate the bounding box of a trip as a PostGIS polygon
-    fn calculate_trip_bounding_box(&self, segments: &[MatchedWaySegment]) -> Result<Polygon> {
+    pub(crate) fn calculate_trip_bounding_box(
+        &self,
+        segments: &[MatchedWaySegment],
+    ) -> Result<Polygon> {
         // Find min/max coordinates from all segments
         let mut min_lon = f64::MAX;
         let mut min_lat = f64::MAX;
@@ -744,7 +747,10 @@ impl TripBuilder {
     }
 
     /// Generate a GeoJSON based of the matched route
-    fn road_segments_to_geojson(&self, segments: &[MatchedWaySegment]) -> serde_json::Value {
+    pub(crate) fn road_segments_to_geojson(
+        &self,
+        segments: &[MatchedWaySegment],
+    ) -> serde_json::Value {
         let mut features = Vec::new();
 
         // Helper to convert geo::Coord to GeoJSON format

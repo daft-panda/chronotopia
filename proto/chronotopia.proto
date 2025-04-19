@@ -11,7 +11,7 @@ service Chronotopia {
 }
 
 message WindowDebugRequest {
-    uint32 trip_index = 1;
+    string trip_id = 1;
     uint32 window_index = 2;
     uint32 start_point = 3;
     uint32 end_point = 4;
@@ -20,12 +20,13 @@ message WindowDebugRequest {
 }
 
 message ConnectivityRequest {
-    uint32 trip_index = 1;
+    string trip_id = 1;
     optional uint32 start_point_index = 2;
     optional uint32 end_point_index = 3;
     optional uint64 from_segment_id = 4;
     optional uint64 to_segment_id = 5;
 }
+
 
 message PathfindingDebugInfo {
     uint32 start_point_idx = 1;

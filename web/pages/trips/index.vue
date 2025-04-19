@@ -132,7 +132,7 @@ const { data, pending, error, refresh } = useAsyncData(
     async () => {
         try {
             const response = await tripsApi.getTripsForUser({
-                limit: 100
+                limit: 200
             });
 
             return response.trips?.trips || [];

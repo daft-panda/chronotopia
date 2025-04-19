@@ -2,7 +2,11 @@ use chrono::FixedOffset;
 use geo::{BoundingRect, Polygon};
 use geo_postgis::FromPostgis;
 use log::{debug, error, info, warn};
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
+use sea_orm::ActiveValue::Set;
+use sea_orm::{
+    ActiveModelTrait as _, ColumnTrait, DatabaseConnection, EntityTrait, IntoActiveModel as _,
+    QueryFilter, QueryOrder, QuerySelect,
+};
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
@@ -18,6 +22,7 @@ use crate::route_matcher::RouteMatcher;
 use crate::trip_processor::TripProcessor;
 
 /// Service for handling trip-related API requests
+#[derive(Debug, Clone)]
 pub struct TripsService {
     db: DatabaseConnection,
     trip_processor: Arc<TripProcessor>,
@@ -124,6 +129,23 @@ impl TripsService {
                 distance: activity.distance,
             };
             proto_trip.activities.push(proto_activity);
+        }
+
+        // Deserialize route match trace if available
+        if let Some(trace_data) = db_trip.route_match_trace {
+            match prost::Message::decode(trace_data.as_slice()) {
+                Ok(trace) => {
+                    let trace: proto::RouteMatchTrace = trace;
+                    proto_trip.route_match_trace = Some(trace);
+                }
+                Err(e) => {
+                    warn!(
+                        "Error decoding route match trace for trip {}: {}",
+                        db_trip.id, e
+                    );
+                    // Continue without the trace
+                }
+            }
         }
 
         Ok(proto_trip)
@@ -299,7 +321,7 @@ impl Trips for TripsService {
 
     async fn get_trip_details(
         &self,
-        request: Request<proto::GetTripDetailsRequest>,
+        request: Request<proto::TripReference>,
     ) -> Result<Response<proto::GetTripDetailsResponse>, Status> {
         // Extract authentication context and user id from request
         let user_id = match request.extensions().get::<Uuid>() {
@@ -330,7 +352,7 @@ impl Trips for TripsService {
 
         // Check if the trip exists and belongs to the user
         let trip = match trip {
-            Some(t) if t.user_id == user_id => t,
+            Some(ref t) if t.user_id == user_id => t,
             Some(_) => {
                 return Err(Status::permission_denied(
                     "Trip does not belong to the authenticated user",
@@ -350,66 +372,31 @@ impl Trips for TripsService {
 
         let mut route_matcher: RouteMatcher =
             RouteMatcher::new(ROUTE_MATCHER_CONFIG.clone()).unwrap();
-        let bbox: Option<Polygon<f64>> = match trip.bounding_box {
+        let bbox: Option<Polygon<f64>> = match &trip.bounding_box {
             postgis::ewkb::GeometryT::<postgis::ewkb::Point>::Polygon(p) => {
-                std::option::Option::<geo::Polygon>::from_postgis(&p)
+                std::option::Option::<geo::Polygon>::from_postgis(p)
             }
             _ => None,
         };
 
         // Fetch OSM way metadata
-        let osm_metadata = match route_matcher
-            .tile_loader
-            .get_way_metadata_from_bbox(bbox.unwrap().bounding_rect().unwrap(), &osm_way_ids)
-        {
-            Ok(metadata) => metadata,
-            Err(e) => {
-                warn!("Error fetching OSM metadata: {}", e);
-                Vec::new() // Continue even if metadata fetch fails
-            }
-        };
-
-        let points: Vec<Point> = match trip.points {
-            Some(v) => {
-                let points: Points = prost::Message::decode(v.as_slice())
-                    .map_err(|_e| Status::internal("invalid points in db trip"))?;
-                points.points
-            }
-            None => vec![],
-        };
-
-        // Convert basic trip fields
-        let mut proto_trip = proto::Trip {
-            id: Some(proto::Uuid {
-                value: trip.id.to_string(),
-            }),
-            start_time: Some(DateTime::from(&trip.start_time)),
-            end_time: Some(DateTime::from(&trip.end_time)),
-            distance_meters: trip.distance_meters,
-            points,
-            processed: trip.processed,
-            matched_segments: Vec::new(),
-            geojson: trip.geo_json.unwrap_or_default(),
-            visits: Vec::new(),
-            activities: Vec::new(),
-            label: trip.label,
-            notes: trip.notes,
-            route_match_trace: None,
-        };
-
-        // Deserialize route match trace if available
-        if let Some(trace_data) = trip.route_match_trace {
-            match prost::Message::decode(trace_data.as_slice()) {
-                Ok(trace) => {
-                    let trace: proto::RouteMatchTrace = trace;
-                    proto_trip.route_match_trace = Some(trace);
-                }
+        let osm_metadata = if let Some(bbox) = bbox {
+            match route_matcher
+                .tile_loader
+                .get_way_metadata_from_bbox(bbox.bounding_rect().unwrap(), &osm_way_ids)
+            {
+                Ok(metadata) => metadata,
                 Err(e) => {
-                    warn!("Error decoding route match trace: {}", e);
-                    // Continue without the trace
+                    warn!("Error fetching OSM metadata: {}", e);
+                    Vec::new() // Continue even if metadata fetch fails
                 }
             }
-        }
+        } else {
+            Vec::new()
+        };
+
+        // Convert to Proto trip (using the shared method)
+        let mut proto_trip = self.db_trip_to_proto(trip.clone()).await?;
 
         // Create matched segments from OSM way IDs and metadata
         for way_id in osm_way_ids {
@@ -433,76 +420,70 @@ impl Trips for TripsService {
             proto_trip.matched_segments.push(segment);
         }
 
-        // Load visits that occurred during this trip's time range
-        let visits = user_visits_ingest::Entity::find()
-            .filter(
-                user_visits_ingest::Column::ArrivalDateTime
-                    .gte(trip.start_time)
-                    .and(user_visits_ingest::Column::DepartureDateTime.lte(trip.end_time)),
-            )
-            .all(&self.db)
-            .await
-            .map_err(|e| {
-                error!("Error loading trip visits: {}", e);
-                Status::internal("Failed to load trip data")
-            })?;
-
-        // Convert visits to proto format
-        for visit in visits {
-            let proto_visit = proto::VisitEvent {
-                latitude: visit.latitude,
-                longitude: visit.longitude,
-                horizontal_accuracy: visit.horizontal_accuracy.unwrap_or(0.0),
-                arrival: Some(DateTime::from(&visit.arrival_date_time)),
-                departure: Some(DateTime::from(&visit.departure_date_time)),
-                canonical_label: visit.canonical_label.unwrap_or_default(),
-                external_place_id: visit.external_place_id,
-            };
-            proto_trip.visits.push(proto_visit);
-        }
-
-        // Load activities that occurred during this trip's time range
-        let activities = user_activity_ingest::Entity::find()
-            .filter(
-                user_activity_ingest::Column::StartDateTime
-                    .gte(trip.start_time)
-                    .and(user_activity_ingest::Column::StartDateTime.lte(trip.end_time)),
-            )
-            .all(&self.db)
-            .await
-            .map_err(|e| {
-                error!("Error loading trip activities: {}", e);
-                Status::internal("Failed to load trip data")
-            })?;
-
-        // Convert activities to proto format
-        for activity in activities {
-            let activity_type = match activity.r#type {
-                ActivityType::Unknown => proto::activity_event::ActivityType::Unknown,
-                ActivityType::Still => proto::activity_event::ActivityType::Still,
-                ActivityType::Walking => proto::activity_event::ActivityType::Walking,
-                ActivityType::Running => proto::activity_event::ActivityType::Running,
-                ActivityType::InVehicle => proto::activity_event::ActivityType::InVehicle,
-                ActivityType::OnBicycle => proto::activity_event::ActivityType::OnBicycle,
-                ActivityType::OnFoot => proto::activity_event::ActivityType::OnFoot,
-                ActivityType::Tilting => proto::activity_event::ActivityType::Tilting,
-                _ => proto::activity_event::ActivityType::Unknown,
-            };
-
-            let proto_activity = proto::ActivityEvent {
-                r#type: activity_type as i32,
-                confidence: activity.confidence,
-                start: Some(DateTime::from(&activity.start_date_time)),
-                end: activity.end_date_time.map(|dt| DateTime::from(&dt)),
-                step_count: activity.step_count,
-                distance: activity.distance,
-            };
-            proto_trip.activities.push(proto_activity);
-        }
-
         // Return the response
         Ok(Response::new(proto::GetTripDetailsResponse {
             trip: Some(proto_trip),
+        }))
+    }
+
+    async fn reprocess_trip(
+        &self,
+        request: Request<proto::TripReference>,
+    ) -> Result<Response<proto::TriggerProcessingResponse>, Status> {
+        // Extract authentication context and user id from request
+        let user_id = match request.extensions().get::<Uuid>() {
+            Some(user_id) => *user_id,
+            None => return Err(Status::unauthenticated("User not authenticated")),
+        };
+
+        let req = request.into_inner();
+        let trip_uuid = match req.trip_id {
+            Some(uuid) => Uuid::parse_str(&uuid.value)
+                .map_err(|_| Status::invalid_argument("Invalid trip UUID"))?,
+            None => return Err(Status::invalid_argument("Trip ID is required")),
+        };
+
+        info!("Reprocessing trip {} for user {}", trip_uuid, user_id);
+
+        // First, check if the trip exists and belongs to the user
+        let trip = trips::Entity::find_by_id(trip_uuid)
+            .one(&self.db)
+            .await
+            .map_err(|e| {
+                error!("Database error when fetching trip: {}", e);
+                Status::internal("Failed to fetch trip")
+            })?;
+
+        let trip = match trip {
+            Some(t) if t.user_id == user_id => t,
+            Some(_) => {
+                return Err(Status::permission_denied(
+                    "Trip does not belong to the authenticated user",
+                ));
+            }
+            None => return Err(Status::not_found("Trip not found")),
+        };
+
+        // Mark trip as unprocessed to trigger reprocessing
+        let mut trip_model = trip.into_active_model();
+        trip_model.processed = Set(false);
+        trip_model.update(&self.db).await.map_err(|e| {
+            error!("Database error when updating trip: {}", e);
+            Status::internal("Failed to update trip for reprocessing")
+        })?;
+
+        // Spawn a task to reprocess just this trip
+        let trip_processor = self.trip_processor.clone();
+        let trip_id = trip_uuid;
+
+        if let Err(e) = trip_processor.process_trip(trip_id).await {
+            error!("Error reprocessing trip {}: {}", trip_id, e);
+        }
+
+        // Return success response
+        Ok(Response::new(proto::TriggerProcessingResponse {
+            success: true,
+            message: "Trip reprocessing complete.".to_string(),
         }))
     }
 }

@@ -1,8 +1,10 @@
 use anyhow::Result;
-use log::{error, info};
+use chrono::{DateTime, Utc};
+use geo::Point;
+use log::{error, info, warn};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, IntoActiveModel,
-    PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Set,
+    PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Set, TransactionTrait,
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -10,6 +12,8 @@ use tokio::time::{self, Duration};
 use uuid::Uuid;
 
 use crate::entity::{import_summary, ingest_batches, trips, user_processing_state};
+use crate::proto::{self, Points};
+use crate::route_matcher::RouteMatchJob;
 use crate::trip_builder::TripBuilder;
 
 /// Service for scheduling and managing trip processing jobs
@@ -232,6 +236,167 @@ impl TripProcessor {
             }
         }
 
+        Ok(())
+    }
+
+    /// Process a specific trip
+    pub async fn process_trip(&self, trip_id: Uuid) -> Result<()> {
+        info!("Processing trip {}", trip_id);
+
+        // Get the trip
+        let trip = trips::Entity::find_by_id(trip_id)
+            .one(&self.db)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Trip not found"))?;
+
+        // Check if the trip is already processed
+        if trip.processed {
+            info!(
+                "Trip {} is already processed, marking as unprocessed first",
+                trip_id
+            );
+
+            // Mark as unprocessed to ensure it gets reprocessed
+            let mut trip_model = trip.clone().into_active_model();
+            trip_model.processed = Set(false);
+            trip_model.update(&self.db).await?;
+        }
+
+        // Create a transaction for our processing
+        let txn = self.db.begin().await?;
+
+        // Extract GPS points from the trip
+        let points: Vec<Point<f64>> = match &trip.points {
+            Some(points_data) => {
+                let points: Points = prost::Message::decode(points_data.as_slice())?;
+                points
+                    .points
+                    .iter()
+                    .filter_map(|p| p.latlon.as_ref().map(|ll| Point::new(ll.lon, ll.lat)))
+                    .collect()
+            }
+            None => {
+                warn!("Trip {} has no points", trip_id);
+                return Err(anyhow::anyhow!("Trip has no points"));
+            }
+        };
+
+        // Extract timestamps
+        let timestamps: Vec<DateTime<Utc>> = match &trip.points {
+            Some(points_data) => {
+                let points: Points = prost::Message::decode(points_data.as_slice())?;
+                points
+                    .points
+                    .iter()
+                    .map(|p| p.date_time.as_ref().unwrap().into())
+                    .collect()
+            }
+            None => vec![Utc::now(); points.len()], // Fallback
+        };
+
+        // Setup route matching job
+        let mut job = RouteMatchJob::new(points, timestamps, None);
+        job.activate_tracing(); // Enable trace collection for debugging
+
+        // Lock the route matcher
+        let mut route_matcher = self.trip_builder.route_matcher.lock().await;
+
+        // Perform map matching
+        match route_matcher.match_trace(&mut job) {
+            Ok(matched_segments) => {
+                info!(
+                    "Map matching successful for trip {}: {} segments matched",
+                    trip_id,
+                    matched_segments.len()
+                );
+
+                // Collect OSM way IDs from the matched segments
+                let way_ids: Vec<i64> = matched_segments
+                    .iter()
+                    .map(|segment| segment.segment.osm_way_id as i64)
+                    .collect();
+
+                // Create a JSON array of OSM way IDs
+                let way_ids_json = serde_json::to_value(&way_ids)?;
+
+                // Calculate the bounding box of the trip
+                let bounding_box = self
+                    .trip_builder
+                    .calculate_trip_bounding_box(&matched_segments)?;
+
+                // Serialize the route match trace to protobuf binary format
+                let window_trace = job.window_trace.take();
+
+                // Convert to proto RouteMatchTrace
+                let mut proto_trace = proto::RouteMatchTrace {
+                    window_traces: Vec::new(),
+                    point_candidates: Vec::new(),
+                };
+
+                // Convert window traces
+                for window in window_trace.iter() {
+                    proto_trace.window_traces.push(window.into());
+                }
+
+                // Convert point candidates GeoJSON
+                let point_candidates = job.point_candidates_geojson.take();
+
+                for candidate in point_candidates.iter() {
+                    proto_trace
+                        .point_candidates
+                        .push(serde_json::to_string(candidate).unwrap());
+                }
+
+                // Serialize to protobuf binary
+                let mut route_match_trace: Vec<u8> = Vec::new();
+                prost::Message::encode(&proto_trace, &mut route_match_trace)?;
+
+                // Generate GeoJSON for the matched route
+                let matched_geojson = self
+                    .trip_builder
+                    .road_segments_to_geojson(&matched_segments);
+
+                // Update the trip record with the matching results
+                let trip_update = trips::ActiveModel {
+                    id: Set(trip_id),
+                    processed: Set(true),
+                    osm_way_ids: Set(way_ids_json),
+                    bounding_box: Set(postgis::ewkb::GeometryT::Polygon(bounding_box)),
+                    route_match_trace: Set(Some(route_match_trace)),
+                    geo_json: Set(Some(serde_json::to_string(&matched_geojson)?)),
+                    last_modified: Set(Utc::now().into()),
+                    ..Default::default()
+                };
+
+                trip_update.update(&txn).await?;
+                info!("Updated trip {} with reprocessed route match data", trip_id);
+            }
+            Err(e) => {
+                // Mark the trip as processed but with an error
+                let trip_update = trips::ActiveModel {
+                    id: Set(trip_id),
+                    processed: Set(true), // Mark as processed even with error
+                    notes: Set(Some(format!("Route matching failed: {}", e))),
+                    last_modified: Set(Utc::now().into()),
+                    ..Default::default()
+                };
+
+                trip_update.update(&txn).await?;
+                warn!(
+                    "Route-based map matching failed for trip {}: {}",
+                    trip_id, e
+                );
+            }
+        }
+
+        // Commit the transaction
+        txn.commit().await?;
+
+        // Update the user processing state
+        self.update_single_user_processing_state(trip.user_id)
+            .await?;
+
+        info!("Trip {} reprocessing completed", trip_id);
         Ok(())
     }
 }

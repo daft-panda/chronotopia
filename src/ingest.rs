@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use anyhow::Result;
 use chrono::{DateTime, FixedOffset, Utc};
+use geo::{Distance, Haversine, Point};
 use log::{debug, info};
 use sea_orm::ActiveValue::NotSet;
 use sea_orm::prelude::DateTimeWithTimeZone;
@@ -677,6 +678,95 @@ impl IngestService {
 
         Ok(())
     }
+
+    // Helper method for sorting location points with equal timestamps
+    fn sort_locations_with_equal_timestamps(locations: &mut Vec<ProtoLocationPoint>) {
+        if locations.is_empty() {
+            return;
+        }
+
+        // First sort by timestamp
+        locations.sort_by(|a, b| {
+            let time_a = a.date_time.as_ref().map(|dt| {
+                let dt: DateTime<Utc> = dt.into();
+                dt
+            });
+            let time_b = b.date_time.as_ref().map(|dt| {
+                let dt: DateTime<Utc> = dt.into();
+                dt
+            });
+            time_a.cmp(&time_b)
+        });
+
+        // Group by minute-precision timestamps
+        let mut result = Vec::with_capacity(locations.len());
+        let mut current_group = Vec::new();
+        let mut previous_point: Option<(f64, f64)> = None;
+        let mut current_minute = String::new();
+
+        for point in locations.iter() {
+            if let Some(dt) = &point.date_time {
+                let dt: DateTime<Utc> = dt.into();
+                let minute_str = dt.format("%Y-%m-%d %H:%M").to_string();
+
+                if minute_str != current_minute {
+                    // Process the current group before starting a new one
+                    if !current_group.is_empty() {
+                        // Sort the group by Haversine distance if needed
+                        if current_group.len() > 1 && previous_point.is_some() {
+                            let prev = previous_point.unwrap();
+                            current_group.sort_by(
+                                |a: &ProtoLocationPoint, b: &ProtoLocationPoint| {
+                                    let point_a = Point::new(a.longitude, a.latitude);
+                                    let point_b = Point::new(b.longitude, b.latitude);
+                                    let prev_point = Point::new(prev.1, prev.0);
+
+                                    let dist_a = Haversine.distance(prev_point, point_a);
+                                    let dist_b = Haversine.distance(prev_point, point_b);
+                                    dist_a
+                                        .partial_cmp(&dist_b)
+                                        .unwrap_or(std::cmp::Ordering::Equal)
+                                },
+                            );
+                        }
+
+                        // Add sorted group to results
+                        for p in current_group.iter() {
+                            result.push(p.clone());
+                            previous_point = Some((p.latitude, p.longitude));
+                        }
+                        current_group = Vec::new();
+                    }
+                    current_minute = minute_str;
+                }
+                current_group.push(point.clone());
+            }
+        }
+
+        // Don't forget to process the last group
+        if !current_group.is_empty() {
+            if current_group.len() > 1 && previous_point.is_some() {
+                let prev = previous_point.unwrap();
+                current_group.sort_by(|a, b| {
+                    let point_a = Point::new(a.longitude, a.latitude);
+                    let point_b = Point::new(b.longitude, b.latitude);
+                    let prev_point = Point::new(prev.1, prev.0);
+
+                    let dist_a = Haversine.distance(prev_point, point_a);
+                    let dist_b = Haversine.distance(prev_point, point_b);
+                    dist_a
+                        .partial_cmp(&dist_b)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+            for p in current_group.iter() {
+                result.push(p.clone());
+            }
+        }
+
+        // Replace the original vector with the sorted one
+        *locations = result;
+    }
 }
 
 #[tonic::async_trait]
@@ -968,6 +1058,16 @@ impl Ingest for IngestService {
                 },
             )),
         };
+
+        // Google Timeline exports location timestamps with minute resolution :/
+        // Sort location points with equal timestamps before filtering
+        if !batch.locations.is_empty() {
+            Self::sort_locations_with_equal_timestamps(&mut batch.locations);
+            debug!(
+                "Sorted {} Google Maps Timeline location points with equal timestamps",
+                batch.locations.len()
+            );
+        }
 
         // Filter out any data that overlaps with existing records
         self.filter_batch_overlap(user_id, &mut batch).await?;

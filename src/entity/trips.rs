@@ -445,9 +445,7 @@ impl sea_orm::ActiveModelTrait for ActiveModel {
                 self.last_modified = sea_orm::ActiveValue::set(v.unwrap());
             }
             _ => {
-                ::core::panicking::panic_fmt(format_args!(
-                    "This ActiveModel does not have this field"
-                ));
+                panic!("This ActiveModel does not have this field");
             }
         }
     }
@@ -533,9 +531,7 @@ impl sea_orm::ActiveModelTrait for ActiveModel {
                 self.last_modified.is_not_set()
             }
             _ => {
-                ::core::panicking::panic_fmt(format_args!(
-                    "This ActiveModel does not have this field"
-                ));
+                panic!("This ActiveModel does not have this field");
             }
         }
     }
@@ -584,9 +580,7 @@ impl sea_orm::ActiveModelTrait for ActiveModel {
                 self.last_modified.reset()
             }
             _ => {
-                ::core::panicking::panic_fmt(format_args!(
-                    "This ActiveModel does not have this field"
-                ));
+                panic!("This ActiveModel does not have this field");
             }
         }
     }

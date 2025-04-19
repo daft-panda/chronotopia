@@ -69,7 +69,7 @@ impl WaySegment {
     }
 
     pub fn direction_at_point(&self, point: Point<f64>) -> f64 {
-        let line = LineString::from(self.coordinates.clone());
+        let line: LineString<f64> = self.into();
         let nearest_segment = line
             .lines()
             .min_by(|a, b| {
@@ -91,7 +91,7 @@ impl WaySegment {
 
     pub fn length(&self) -> f64 {
         let mut total = 0.0;
-        let line = LineString::from(self.coordinates.clone());
+        let line: LineString<f64> = self.into();
 
         for segment in line.lines() {
             let start = Point::new(segment.start.x, segment.start.y);
@@ -100,6 +100,12 @@ impl WaySegment {
         }
 
         total // Length in meters
+    }
+}
+
+impl From<&WaySegment> for LineString<f64> {
+    fn from(value: &WaySegment) -> Self {
+        Self(value.coordinates.clone())
     }
 }
 
@@ -456,6 +462,7 @@ impl OSMProcessor {
             "secondary_link",
             "tertiary_link",
             "residential",
+            "living_street",
             "unclassified",
             "service",
         ]
@@ -1723,8 +1730,8 @@ impl OSMProcessor {
                             );
 
                             // 4. Geometric intersection check
-                            let line1 = LineString::from(segment.coordinates.clone());
-                            let line2 = LineString::from(other_segment.coordinates.clone());
+                            let line1: LineString<f64> = segment.into();
+                            let line2: LineString<f64> = other_segment.into();
                             let geometry_intersects = line1.intersects(&line2);
 
                             // Add connection if evidence is strong, respecting one-way direction

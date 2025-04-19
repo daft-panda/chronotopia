@@ -109,7 +109,7 @@ pub(crate) fn calculate_dynamic_transition_cost(
         // Check proximity to the destination segment (to_seg)
         for point in points {
             // Project the point to the segment to get the closest point
-            let line = LineString::from(to_segment.coordinates.clone());
+            let line: LineString<f64> = to_segment.into();
             let closest = line.closest_point(point);
 
             let projection = match closest {
@@ -124,6 +124,15 @@ pub(crate) fn calculate_dynamic_transition_cost(
                 // Apply a significant cost discount if the transition would bring us near a
                 // strong segment candidate
                 base_cost *= 0.1;
+            }
+        }
+    }
+
+    if let Some(metadata) = &to_segment.metadata {
+        if let Some(access) = metadata.get("access") {
+            if access == "private" {
+                // Private roads are over nine thousand
+                base_cost = base_cost * 9000.0;
             }
         }
     }
@@ -346,8 +355,8 @@ pub(crate) fn check_segment_connectivity(
     }
 
     // Create LineStrings for intersection check
-    let line1 = LineString::from(segment1.coordinates.clone());
-    let line2 = LineString::from(segment2.coordinates.clone());
+    let line1: LineString<f64> = segment1.into();
+    let line2: LineString<f64> = segment2.into();
 
     // Check if lines intersect
     if line1.intersects(&line2) {
@@ -371,7 +380,7 @@ pub(crate) fn are_road_types_compatible(type1: &str, type2: &str) -> bool {
         vec!["primary", "primary_link"],
         vec!["secondary", "secondary_link"],
         vec!["tertiary", "tertiary_link"],
-        vec!["residential", "unclassified", "service"],
+        vec!["residential", "unclassified", "service", "living_street"],
         vec!["track", "path", "footway", "cycleway"],
     ];
 
@@ -385,8 +394,8 @@ pub(crate) fn are_road_types_compatible(type1: &str, type2: &str) -> bool {
 
     match (class1, class2) {
         (Some(c1), Some(c2)) => {
-            // Same class or adjacent classes are compatible
-            (c1 as i32 - c2 as i32).abs() <= 1
+            // Same class or up to a two level transition is compatible
+            (c1 as i32 - c2 as i32).abs() <= 2
         }
         _ => {
             // Unknown type, be conservative
