@@ -42,7 +42,7 @@
                 <div v-if="mapData || parsedGeoJson" class="absolute inset-0">
                     <ClientOnly>
                         <MglMap map-style="https://api.maptiler.com/maps/streets/style.json?key=Ic6Mr5qetb5kn90hyEzO"
-                            :zoom="10" @load="onMapLoaded">
+                            :zoom="10" :center="initialCenter">
                             <MglFullscreenControl position="top-right" />
                             <MglNavigationControl position="top-right" />
                             <MglGeolocateControl position="top-right" />
@@ -106,7 +106,7 @@
                 </button>
 
                 <!-- Simple legend -->
-                <div class="flex items-center gap-4">
+                <div class="flex flex-col md:flex-row ml-2 items-center gap-4">
                     <div class="flex items-center">
                         <div class="w-6 h-2 bg-green-500 mr-2" />
                         <span class="text-xs text-gray-700">Constrained</span>
@@ -215,7 +215,7 @@ import { ActivityEvent_ActivityType } from '~/model/ingest_pb';
 import type { Trip } from '~/model/trips_pb';
 import { formatDate, formatDistance, formatDuration, formatDurationFromVisit, formatTime } from '~/utils/formatting';
 import { MglMap, MglNavigationControl, MglFullscreenControl, MglGeolocateControl, MglGeoJsonSource, MglLineLayer, MglMarker, MglPopup } from '#components';
-import { LngLatBounds, type Map as MaplibreMap } from 'maplibre-gl';
+import type { LngLatLike, Map as MaplibreMap } from 'maplibre-gl';
 import type { GeoJSON } from 'geojson';
 
 const { tripsApi } = useApi();
@@ -256,35 +256,18 @@ const { data: trip, pending, error } = useAsyncData(
     }
 );
 
-// Fit map to bounds of the trip points
-const fitMapToBounds = () => {
-    if (!mapInstance.value || !trip.value?.points?.length) return;
+// Calculate initial center point for the map
+const initialCenter = computed((): LngLatLike => tripInitialCenter(trip.value!));
 
-    // Create a bounds object
-    const bounds = new LngLatBounds();
+watch(() => map.isLoaded, (isLoaded) => {
+    if (isLoaded) {
+        mapInstance.value = map.map;
+        mapLoaded.value = true;
 
-    // Add all points to the bounds
-    for (const point of trip.value.points) {
-        if (point.latlon) {
-            bounds.extend([point.latlon.lon, point.latlon.lat]);
-        }
+        // Fit map to trip bounds once data is loaded
+        // @ts-expect-error it got confused again
+        fitMapToBounds(mapInstance.value!, trip.value!);
     }
-
-    // Only fit bounds if we have valid coordinates
-    if (!bounds.isEmpty()) {
-        mapInstance.value.fitBounds(bounds, {
-            padding: 50,
-            maxZoom: 15
-        });
-    }
-};
-
-watch(() => map.isLoaded, (_isLoaded) => {
-    mapInstance.value = map.map;
-    mapLoaded.value = true;
-
-    // Fit bounds to the trip points if available
-    fitMapToBounds();
 }, { immediate: true });
 
 // Navigate to the detailed map matching view
@@ -311,6 +294,7 @@ const formatTripTitle = (trip: Trip) => {
             day: 'numeric',
             year: 'numeric'
         })}`;
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
     } catch (_e: any) {
         return 'Untitled Trip';
     }

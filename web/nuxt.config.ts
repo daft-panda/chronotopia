@@ -14,15 +14,16 @@ export default defineNuxtConfig({
     "@nuxt/ui",
     "nuxt-maplibre",
     "nuxt-workers",
+    "@nuxtjs/device",
   ],
 
   css: ["~/assets/css/main.css"],
 
   runtimeConfig: {
-    apiBaseUrl: "http://localhost:10000",
+    apiBaseUrl: "http://192.168.188.41:10000",
     serviceWorkers: "run",
     public: {
-      apiBaseUrl: "http://localhost:10000",
+      apiBaseUrl: "http://192.168.188.41:10000",
       ci: "false",
       siteEnv: "dev",
     },

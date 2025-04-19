@@ -266,7 +266,7 @@
 </template>
 
 <script lang="ts" setup>
-import { LngLatBounds, type LngLatLike, type Map as MaplibreMap } from 'maplibre-gl';
+import type { LngLatLike, Map as MaplibreMap } from 'maplibre-gl';
 import { VueDraggable } from 'vue-draggable-plus';
 import { v4 as uuidv4 } from 'uuid';
 import type { Trip } from '~/model/trips_pb';
@@ -276,6 +276,7 @@ import {
     formatDistance,
     formatTime,
 } from '~/utils/formatting';
+import { tripInitialCenter, fitMapToBounds } from '~/utils/map';
 
 // Get route params
 const { tripsApi, commonApi } = useApi();
@@ -321,61 +322,17 @@ const { data: trip, pending, error } = useAsyncData(
 );
 
 // Calculate initial center point for the map
-const initialCenter = computed((): LngLatLike => {
-    if (trip.value?.points && trip.value.points.length > 0) {
-        // Find a central point from the trip data
-        let sumLat = 0;
-        let sumLon = 0;
-        let count = 0;
-
-        for (const point of trip.value.points) {
-            if (point.latlon) {
-                sumLat += point.latlon.lat;
-                sumLon += point.latlon.lon;
-                count++;
-            }
-        }
-
-        if (count > 0) {
-            return [sumLon / count, sumLat / count];
-        }
-    }
-
-    // Default center if no points available
-    return [0, 0];
-});
+const initialCenter = computed((): LngLatLike => tripInitialCenter(trip.value!));
 
 watch(() => map.isLoaded, (isLoaded) => {
     if (isLoaded) {
         mapInstance.value = map.map;
 
         // Fit map to trip bounds once data is loaded
-        fitMapToBounds();
+        // @ts-expect-error it got confused again
+        fitMapToBounds(mapInstance.value!, trip.value!);
     }
 }, { immediate: true });
-
-// Fit map to bounds of the trip points
-function fitMapToBounds() {
-    if (!mapInstance.value || !trip.value?.points?.length) return;
-
-    // Create a bounds object
-    const bounds = new LngLatBounds();
-
-    // Add all points to the bounds
-    for (const point of trip.value.points) {
-        if (point.latlon) {
-            bounds.extend([point.latlon.lon, point.latlon.lat]);
-        }
-    }
-
-    // Only fit bounds if we have valid coordinates
-    if (!bounds.isEmpty()) {
-        mapInstance.value.fitBounds(bounds, {
-            padding: 50,
-            maxZoom: 14
-        });
-    }
-}
 
 // Map interaction
 function onMapClick(e: any) {
@@ -486,6 +443,7 @@ function formatTripTitle(trip: Trip) {
             day: 'numeric',
             year: 'numeric'
         })}`;
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
     } catch (_e: any) {
         return 'Untitled Trip';
     }
